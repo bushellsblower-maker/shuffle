@@ -1,7 +1,12 @@
 import "./style.css";
 import { MAX_ANGLE, planCpuShot, powerOf, speedOf, type Shot } from "./ai.ts";
 import { Sound } from "./audio.ts";
+import { gameBody } from "./history.ts";
+import { roundLog, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
+import { OnlineClient, clearTicket, createRoom, joinRoom, loadTicket, roomLink, roomPreview, saveTicket, type LinkState } from "./online.ts";
 import { World, type Body } from "./physics.ts";
+import type { AimInput, RoomSnapshot, RoomTicket, ServerMsg } from "./protocol.ts";
+import { codeFromLocation, isRoomCode, normalizeCode, randomToken } from "./room-code.ts";
 import {
   TABLE,
   isLive,
@@ -13,8 +18,9 @@ import {
   type Team,
 } from "./rules.ts";
 import { GUTTER_W, GUTTER_Y, PIT_LEN, Stage, TEAM_COLORS, type PuckView } from "./scene.ts";
+import { Scoreboard, flushUnsent, recordGame } from "./scoreboard.ts";
 
-type Mode = "2p" | "cpu";
+type Mode = "2p" | "cpu" | "online";
 interface Settings {
   names: [string, string];
   target: 15 | 21;
@@ -39,9 +45,12 @@ interface Weight {
   body: Body | null;
   status: "rack" | "aim" | "play" | "falling" | "gone";
   fall?: Fall;
+  /** Shot index within the round; matches the online room's weight ids. */
+  id?: number;
 }
 
-type Phase = "menu" | "aim" | "rolling" | "resolving" | "roundEnd" | "matchEnd";
+/** `settle`: an online shot has finished animating and is waiting for the room's result. */
+type Phase = "menu" | "aim" | "rolling" | "resolving" | "settle" | "roundEnd" | "matchEnd";
 
 const R = TABLE.puckRadius;
 const LANE = TABLE.width / 2 - R - 0.02;
@@ -53,6 +62,8 @@ const canvas = $<HTMLCanvasElement>("c");
 const stage = new Stage(canvas);
 const sound = new Sound();
 const world = new World();
+const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const other = (t: Team) => (1 - t) as Team;
 
 function loadSettings(): Settings {
   try {
@@ -60,7 +71,7 @@ function loadSettings(): Settings {
     return {
       names: [s.names?.[0] || DEFAULT_NAMES[0], s.names?.[1] || DEFAULT_NAMES[1]],
       target: s.target === 15 ? 15 : 21,
-      mode: s.mode === "cpu" ? "cpu" : "2p",
+      mode: s.mode === "cpu" || s.mode === "online" ? s.mode : "2p",
     };
   } catch {
     return { names: [...DEFAULT_NAMES], target: 21, mode: "2p" };
@@ -70,6 +81,10 @@ function loadSettings(): Settings {
 let settings = loadSettings();
 let phase: Phase = "menu";
 let matchLive = false;
+/** Mode of the match on the table (the menu's selection can differ until a new game starts). */
+let matchMode: Mode = settings.mode === "cpu" ? "cpu" : "2p";
+let matchId = "";
+let roundsLog: RoundLog[] = [];
 let scores: [number, number] = [0, 0];
 let round = 1;
 let firstShooter: Team = 0;
@@ -82,9 +97,35 @@ const lastPower: [number | null, number | null] = [null, null];
 const lastX: [number, number] = [0, 0];
 let labels: { el: HTMLElement; w: Weight }[] = [];
 let cpu: { shot: Shot; t: number; fromX: number } | null = null;
+let endToken = 0;
 
-const isCpuTurn = () => settings.mode === "cpu" && current?.team === CPU;
-const teamName = (t: Team) => settings.names[t];
+/* Online */
+type ShotMsg = Extract<ServerMsg, { t: "shot" }>;
+let net: OnlineClient | null = null;
+let seat: Team | null = null;
+let link: LinkState = "connecting";
+let room: RoomSnapshot | null = null;
+/** Shots this browser has put on the table in the current room; equals the room's `seq` when in sync. */
+let localSeq = 0;
+let pendingShot: { seq: number; shot: ShotInput } | null = null;
+let awaiting: RoomSnapshot | null = null;
+let remoteShots: ShotMsg[] = [];
+let rejectPending = false;
+let remoteAim: { target: AimInput; x: number; angle: number; power: number } | null = null;
+let settleWait = 0;
+
+const isOnline = () => matchMode === "online" && net !== null;
+const isCpuTurn = () => matchMode === "cpu" && current?.team === CPU;
+const isRemoteTurn = () => isOnline() && !!current && current.team !== seat;
+const opponentHere = () => seat !== null && !!room?.players[other(seat)]?.connected;
+const teamName = (t: Team) => (matchMode === "online" && room?.players[t]?.name) || settings.names[t];
+const busy = () => phase === "rolling" || phase === "resolving" || phase === "settle";
+
+function canShoot(): boolean {
+  if (phase !== "aim" || !current || isCpuTurn()) return false;
+  if (matchMode !== "online") return true;
+  return current.team === seat && !!net?.isOpen && opponentHere();
+}
 
 /* ---------------- HUD ---------------- */
 
@@ -101,13 +142,16 @@ const hud = {
   labels: $("labels"),
   card: $("roundCard"),
   menu: $("menu"),
+  net: $("net"),
 };
 
 function renderHud(): void {
   ([0, 1] as Team[]).forEach((t) => {
     const el = hud.team[t];
-    const cpuTag = settings.mode === "cpu" && t === CPU && teamName(t) !== "CPU" ? " · CPU" : "";
-    el.querySelector(".name")!.textContent = teamName(t) + cpuTag;
+    let tag = "";
+    if (matchMode === "cpu" && t === CPU && teamName(t) !== "CPU") tag = " · CPU";
+    if (matchMode === "online" && t === seat) tag = " · YOU";
+    el.querySelector(".name")!.textContent = teamName(t) + tag;
     el.querySelector(".score")!.textContent = String(scores[t]);
     el.classList.toggle("active", !!current && current.team === t && (phase === "aim" || phase === "rolling"));
     const pips = el.querySelector(".pips")!;
@@ -117,7 +161,8 @@ function renderHud(): void {
       .join("");
   });
   hud.round.textContent = String(round);
-  hud.target.textContent = String(settings.target);
+  hud.target.textContent = String(matchMode === "online" && room ? room.target : settings.target);
+  updateNet();
 }
 
 let bannerTimer = 0;
@@ -139,6 +184,42 @@ function setPower(p: number | null): void {
   if (current) hud.power.style.setProperty("--c", TEAM_COLORS[current.team]);
 }
 
+function turnHint(): string {
+  if (!current) return "";
+  if (isCpuTurn()) return "CPU is lining up…";
+  if (matchMode !== "online") return "Pull back & release · or flick forward";
+  if (current.team !== seat) return `${teamName(current.team)} is lining up…`;
+  if (!net?.isOpen) return "Reconnecting…";
+  if (!opponentHere()) return `Paused until ${teamName(other(seat!))} is back`;
+  return "Your turn · pull back & release";
+}
+
+function updateNet(): void {
+  const show = matchMode === "online" && !!net && room?.status === "playing";
+  hud.net.classList.toggle("show", show);
+  if (!show || seat === null) return;
+  let text = `ROOM ${room!.code}`;
+  let color = "#ffc21a";
+  let warn = false;
+  if (link !== "open") {
+    text = "RECONNECTING…";
+    warn = true;
+  } else if (!opponentHere()) {
+    text = `${teamName(other(seat))} OFFLINE · PAUSED`;
+    warn = true;
+  } else if (current && (phase === "aim" || busy())) {
+    text = current.team === seat ? "YOUR TURN" : `${teamName(current.team)}'S TURN`;
+    color = TEAM_COLORS[current.team];
+  }
+  hud.net.querySelector("span")!.textContent = text;
+  hud.net.style.setProperty("--c", color);
+  hud.net.classList.toggle("warn", warn);
+  if (phase === "aim" && current && !drag) {
+    hud.hint.textContent = turnHint();
+    hud.hint.classList.add("show");
+  }
+}
+
 function layout(): void {
   stage.resize();
   const w = window.innerWidth;
@@ -150,6 +231,7 @@ function layout(): void {
   const rect = { x: w - iw - 10, y: Math.round(top), w: iw, h: ih };
   stage.inset = rect;
   Object.assign(hud.inset.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.w}px`, height: `${rect.h}px` });
+  hud.net.style.top = `${Math.round(top - 2)}px`;
 }
 
 /* ---------------- Match flow ---------------- */
@@ -169,17 +251,22 @@ function rackPosition(w: Weight): void {
   w.view.group.rotation.set(0, 0, 0);
 }
 
-function newMatch(): void {
+function newMatch(mode: "2p" | "cpu" = matchMode === "cpu" ? "cpu" : "2p"): void {
+  matchMode = mode;
+  matchId = randomToken(8);
+  roundsLog = [];
   scores = [0, 0];
   round = 1;
   firstShooter = 0;
   lastPower[0] = lastPower[1] = null;
   matchLive = true;
   hideCard();
+  hud.inset.classList.remove("off");
   startRound();
 }
 
 function startRound(): void {
+  endToken++;
   clearWeights();
   lastResult = null;
   shotIndex = 0;
@@ -201,13 +288,16 @@ function nextTurn(): void {
   weights.filter((w) => w.status === "rack").forEach(rackPosition);
   placeAim(lastX[team]);
   phase = "aim";
+  remoteAim = null;
   stage.setCamera("aim");
   stage.hideAim();
   const left = TABLE.weightsPerSide - Math.floor(shotIndex / 2);
+  const mine = matchMode === "online" && team === seat;
+  if (mine) sound.chime();
   setTimeout(() => {
-    if (phase === "aim") banner(`${teamName(team)} · ${left} LEFT`, team, 1.4);
+    if (phase === "aim" && current?.team === team) banner(mine ? `YOUR TURN · ${left} LEFT` : `${teamName(team)} · ${left} LEFT`, team, 1.4);
   }, shotIndex === 0 ? 1100 : 0);
-  hud.hint.textContent = isCpuTurn() ? "CPU is lining up…" : "Pull back & release · or flick forward";
+  hud.hint.textContent = turnHint();
   hud.hint.classList.add("show");
   setPower(null);
   if (isCpuTurn()) {
@@ -223,11 +313,12 @@ function placeAim(x: number, pull = 0): void {
   current.view.group.rotation.set(0, 0, 0);
 }
 
-function launch(x: number, angle: number, speed: number): void {
+function launch(x: number, angle: number, speed: number, remote = false): void {
   if (!current || phase !== "aim") return;
   const w = current;
   lastX[w.team] = x;
   lastPower[w.team] = powerOf(speed);
+  w.id = shotIndex;
   w.body = { x, d: TABLE.launchD, vx: speed * Math.sin(angle), vd: speed * Math.cos(angle), active: true };
   world.bodies.push(w.body);
   w.status = "play";
@@ -238,6 +329,13 @@ function launch(x: number, angle: number, speed: number): void {
   hud.hint.classList.remove("show");
   setPower(null);
   sound.launch(powerOf(speed));
+  if (matchMode === "online") {
+    if (!remote) {
+      pendingShot = { seq: localSeq, shot: { x, angle, speed } };
+      net?.send({ t: "shot", seq: localSeq, shot: pendingShot.shot });
+    }
+    localSeq++;
+  }
   renderHud();
 }
 
@@ -329,15 +427,22 @@ function resolveShot(): void {
   resolveTimer = swept ? 0.9 : 0.35;
 }
 
-function endRound(): void {
+/** Ends the round on the table. Online, `auth` is the room's state and its scores win. */
+function endRound(auth: MatchState | null = null): void {
   current = null;
   const live = weights.filter((w) => w.status === "play" && w.body);
   const result = scoreRound(live.map((w) => ({ team: w.team, x: w.body!.x, d: w.body!.d })));
   lastResult = result;
-  phase = "roundEnd";
   stage.setCamera("head");
   hud.inset.classList.add("off");
-  if (result.team !== null) scores[result.team] += result.points;
+  if (auth) scores = [auth.scores[0], auth.scores[1]];
+  else {
+    if (result.team !== null) scores[result.team] += result.points;
+    roundsLog.push(roundLog(round, result, scores, firstShooter));
+  }
+  const winner = auth ? auth.winner : matchWinner(scores, settings.target);
+  phase = winner === null ? "roundEnd" : "matchEnd";
+  if (winner !== null) matchLive = false;
   result.counted.forEach((c) => {
     const w = live[c.index];
     stage.highlight(w.view, w.team);
@@ -352,23 +457,16 @@ function endRound(): void {
     if (result.team !== null && w.team !== result.team) w.view.cap.emissiveIntensity = 0.02;
   });
   renderHud();
+  const token = ++endToken;
   setTimeout(() => {
-    if (phase !== "roundEnd") return;
-    const winner = matchWinner(scores, settings.target);
+    if (token !== endToken) return;
     if (winner !== null) {
-      phase = "matchEnd";
-      matchLive = false;
       sound.win();
-      showCard(
-        "MATCH OVER",
-        `${teamName(winner)} WINS`,
-        `${scores[winner]} – ${scores[winner === 0 ? 1 : 0]} after ${round} rounds`,
-        winner,
-        [
-          ["REMATCH", newMatch],
-          ["MENU", openMenu],
-        ],
-      );
+      if (!auth) saveLocalMatch(winner);
+      const loser = other(winner);
+      const big = matchMode === "online" && winner === seat ? "YOU WIN" : `${teamName(winner)} WINS`;
+      cardKind = "match";
+      showCard("MATCH OVER", big, `${scores[winner]} – ${scores[loser]} after ${round} rounds`, winner, cardActions());
     } else {
       if (result.team === null) sound.blank();
       else sound.score(result.points);
@@ -377,12 +475,13 @@ function endRound(): void {
           ? "No weight counted. Order stays the same."
           : result.counted.map((c) => (c.hanger ? `${c.zone}+1 hanger` : `${c.zone}`)).join(" · ") +
             ` — ${teamName(result.team)} throws first next round`;
+      cardKind = "round";
       showCard(
         `ROUND ${round}`,
         result.team === null ? "BLANK ROUND" : `${teamName(result.team)} +${result.points}`,
         detail,
         result.team,
-        [["NEXT ROUND", nextRound]],
+        cardActions(),
       );
     }
   }, 900);
@@ -397,8 +496,37 @@ function nextRound(): void {
   startRound();
 }
 
-type CardArgs = [kicker: string, big: string, detail: string, team: Team | null, actions: [string, () => void][]];
+function saveLocalMatch(winner: Team): void {
+  const mode = matchMode === "cpu" ? "cpu" : "local";
+  void recordGame(
+    gameBody({
+      id: `s3d-${mode}-${matchId}`,
+      names: settings.names,
+      scores,
+      target: settings.target,
+      winner,
+      rounds: roundsLog,
+      mode,
+    }),
+  );
+}
+
+type CardAction = [label: string, fn: () => void, disabled?: boolean];
+type CardArgs = [kicker: string, big: string, detail: string, team: Team | null, actions: CardAction[]];
 let cardArgs: CardArgs | null = null;
+let cardKind: "round" | "match" | null = null;
+
+function cardActions(): CardAction[] {
+  const board: CardAction = ["SCORES", () => openBoard()];
+  if (matchMode !== "online") {
+    return cardKind === "match" ? [["REMATCH", () => newMatch()], board, ["MENU", () => openMenu()]] : [["NEXT ROUND", nextRound]];
+  }
+  const me = seat ?? 0;
+  const waiting: CardAction = [`WAITING FOR ${teamName(other(me))}…`, () => {}, true];
+  const ready = !!room?.ready[me];
+  if (cardKind === "match") return [ready ? waiting : ["REMATCH", readyUp], board, ["LEAVE", () => exitRoom(true)]];
+  return [ready ? waiting : ["NEXT ROUND", readyUp]];
+}
 
 function showCard(...args: CardArgs): void {
   cardArgs = args;
@@ -406,89 +534,568 @@ function showCard(...args: CardArgs): void {
   hud.card.style.setProperty("--c", team === null ? "#ffc21a" : TEAM_COLORS[team]);
   hud.card.querySelector(".k")!.textContent = kicker;
   hud.card.querySelector(".big")!.textContent = big;
-  hud.card.querySelector(".detail")!.textContent = detail;
+  let sub = detail;
+  if (matchMode === "online" && seat !== null && room?.ready[other(seat)] && !room.ready[seat]) sub += ` · ${teamName(other(seat))} is ready`;
+  hud.card.querySelector(".detail")!.textContent = sub;
   hud.card.querySelector(".scoreline")!.innerHTML = ([0, 1] as Team[])
-    .map((t) => `<span style="color:${TEAM_COLORS[t]}">${teamName(t)} <b>${scores[t]}</b></span>`)
+    .map((t) => `<span style="color:${TEAM_COLORS[t]}">${esc(teamName(t))} <b>${scores[t]}</b></span>`)
     .join("<em>/</em>");
   const box = hud.card.querySelector(".actions")!;
   box.innerHTML = "";
-  actions.forEach(([label, fn], i) => {
+  actions.forEach(([label, fn, disabled], i) => {
     const b = document.createElement("button");
     b.textContent = label;
     b.className = i === 0 ? "go" : "ghost";
+    b.disabled = !!disabled;
     b.onclick = () => {
       sound.tick();
       fn();
     };
     box.appendChild(b);
   });
-  hud.card.classList.add("show");
+  if (!hud.menu.classList.contains("show")) hud.card.classList.add("show");
 }
 
 function hideCard(): void {
   cardArgs = null;
+  cardKind = null;
   hud.card.classList.remove("show");
 }
+
+/** Re-draw the round/match card after the room's ready flags change. */
+function refreshCard(): void {
+  if (!cardArgs || !cardKind) return;
+  const [k, big, detail, team] = cardArgs;
+  showCard(k, big, detail, team, cardActions());
+}
+
+/* ---------------- Online ---------------- */
+
+function readyUp(): void {
+  if (!net || seat === null || !room) return;
+  net.send({ t: "ready" });
+  room.ready[seat] = true;
+  refreshCard();
+}
+
+/** Drop whatever is on the table (a local match being abandoned, or before an online rebuild). */
+function abandonTable(): void {
+  endToken++;
+  clearWeights();
+  hideCard();
+  current = null;
+  cpu = null;
+  drag = null;
+  phase = "menu";
+  matchLive = false;
+  scores = [0, 0];
+  round = 1;
+  stage.hideAim();
+  setPower(null);
+  hud.hint.classList.remove("show");
+  hud.inset.classList.remove("off");
+  stage.setCamera("overview");
+  renderHud();
+}
+
+function enterRoom(t: RoomTicket, resuming = false): void {
+  net?.close();
+  saveTicket(t);
+  abandonTable();
+  seat = t.seat;
+  room = null;
+  localSeq = 0;
+  pendingShot = null;
+  awaiting = null;
+  remoteShots = [];
+  link = "connecting";
+  matchMode = "online";
+  let welcomed = false;
+  net = new OnlineClient(t, {
+    message: (msg) => {
+      if (msg.t === "welcome") welcomed = true;
+      onServer(msg);
+    },
+    link: (state) => {
+      link = state;
+      if (room?.status === "lobby" || !room) showLobby();
+      renderHud();
+    },
+    gone: (reason) => exitRoom(false, resuming && !welcomed ? "" : reason),
+  });
+  closeMenu();
+  showLobby();
+  if (location.pathname !== `/join/${t.code}`) history.replaceState(null, "", `/join/${t.code}`);
+}
+
+/** Leave the online room (telling it, if `tell`), then go back to the menu. */
+function exitRoom(tell: boolean, message = ""): void {
+  if (tell) net?.send({ t: "leave" });
+  net?.close();
+  net = null;
+  clearTicket();
+  seat = null;
+  room = null;
+  pendingShot = null;
+  awaiting = null;
+  remoteShots = [];
+  remoteAim = null;
+  matchMode = settings.mode === "cpu" ? "cpu" : "2p";
+  hideLobby();
+  abandonTable();
+  if (location.pathname !== "/" || location.search) history.replaceState(null, "", "/");
+  openMenu();
+  menuMsg(message, !!message);
+}
+
+function onServer(msg: ServerMsg): void {
+  switch (msg.t) {
+    case "welcome":
+      seat = msg.seat;
+      onRoom(msg.room, true);
+      return;
+    case "state":
+      onRoom(msg.room);
+      return;
+    case "shot":
+      room = msg.room;
+      if (pendingShot && msg.seat === seat && msg.seq === pendingShot.seq) {
+        pendingShot = null;
+        awaiting = msg.room;
+      } else {
+        remoteShots.push(msg);
+        pump();
+      }
+      renderHud();
+      return;
+    case "aim":
+      if (!isRemoteTurn() || phase !== "aim" || !current) return;
+      if (!remoteAim) {
+        const x = current.view.group.position.x;
+        remoteAim = { target: { x, angle: 0, power: 0 }, x, angle: 0, power: 0 };
+      }
+      remoteAim.target = msg.aim ?? { ...remoteAim.target, power: 0, angle: 0 };
+      return;
+    case "error":
+      if (pendingShot) rejectPending = true;
+      hud.hint.textContent = msg.message;
+      hud.hint.classList.add("show");
+      return;
+  }
+}
+
+function onRoom(r: RoomSnapshot, welcome = false): void {
+  const before = room;
+  room = r;
+  if (r.status === "closed") return exitRoom(false, r.reason ?? "The room was closed.");
+  if (seat !== null && before && r.players[other(seat)]?.connected && !before.players[other(seat)]?.connected) sound.chime();
+  if (rejectPending) {
+    rejectPending = false;
+    pendingShot = null;
+    awaiting = null;
+    remoteShots = [];
+    if (r.match) return applySnapshot(r);
+  }
+  if (pendingShot && r.seq > pendingShot.seq) pendingShot = null;
+  if (welcome && pendingShot && r.seq === pendingShot.seq) net?.send({ t: "shot", seq: pendingShot.seq, shot: pendingShot.shot });
+  if (r.status === "lobby" || !r.match) {
+    if (matchMode === "online" && phase !== "menu") abandonTable();
+    showLobby();
+    return;
+  }
+  hideLobby();
+  pump();
+  renderHud();
+}
+
+function inSync(r: RoomSnapshot): boolean {
+  const m = r.match;
+  if (!m || matchMode !== "online") return false;
+  const kind = phase === "aim" || phase === "roundEnd" || phase === "matchEnd" ? phase : null;
+  return r.seq === localSeq && m.round === round && m.shotIndex === shotIndex && m.phase === kind;
+}
+
+/** Bring the table up to the room: animate the next opponent shot, or rebuild if out of step. */
+function pump(): void {
+  if (!room?.match || matchMode !== "online" || busy()) return;
+  remoteShots = remoteShots.filter((s) => s.seq >= localSeq);
+  const next = remoteShots.shift();
+  if (next) {
+    if (playRemote(next)) return;
+    remoteShots = [];
+  }
+  if (!inSync(room)) applySnapshot(room);
+  else refreshCard();
+}
+
+function playRemote(msg: ShotMsg): boolean {
+  const m = msg.room.match;
+  if (!m || phase !== "aim" || !current || current.team !== msg.seat) return false;
+  if (msg.seq !== localSeq || m.round !== round || m.shotIndex !== shotIndex + 1) return false;
+  awaiting = msg.room;
+  remoteAim = null;
+  placeAim(msg.shot.x);
+  launch(msg.shot.x, msg.shot.angle, msg.shot.speed, true);
+  return true;
+}
+
+/** Called each frame in `settle` until the room's result for the last shot is known. */
+function trySettle(): void {
+  if (awaiting) {
+    const r = awaiting;
+    awaiting = null;
+    settleTo(r);
+    return;
+  }
+  if (room?.match && room.seq >= localSeq && !pendingShot) return applySnapshot(room);
+  if (settleWait > 1.5) {
+    hud.hint.textContent = net?.isOpen ? "Syncing with the room…" : "Reconnecting…";
+    hud.hint.classList.add("show");
+  }
+}
+
+function settleTo(r: RoomSnapshot): void {
+  const m = r.match;
+  if (!m || r.status !== "playing" || m.round !== round) return applySnapshot(room ?? r);
+  const byId = new Map(m.table.map((w) => [w.id, w]));
+  for (const w of weights) {
+    if (w.id === undefined || !w.body) continue;
+    const auth = byId.get(w.id);
+    if (auth) {
+      if (w.status !== "play") {
+        w.fall = undefined;
+        w.status = "play";
+      }
+      Object.assign(w.body, { x: auth.x, d: auth.d, vx: 0, vd: 0, active: true });
+      w.view.group.position.set(auth.x, 0, -auth.d);
+      w.view.group.rotation.set(0, 0, 0);
+    } else if (w.status === "play" || w.status === "falling") {
+      w.body.active = false;
+      w.status = "gone";
+      w.view.group.visible = false;
+    }
+  }
+  hud.hint.classList.remove("show");
+  shotIndex = m.shotIndex;
+  firstShooter = m.firstShooter;
+  scores = [m.scores[0], m.scores[1]];
+  if (m.phase === "aim") nextTurn();
+  else endRound(m);
+  pump();
+}
+
+/** Rebuild the table from a room snapshot (join, reconnect, new round, or recovery). */
+function applySnapshot(r: RoomSnapshot): void {
+  const m = r.match;
+  if (!m) return;
+  hideLobby();
+  hideCard();
+  endToken++;
+  const newRound = matchMode !== "online" || m.round !== round || !matchLive;
+  matchMode = "online";
+  matchLive = m.phase !== "matchEnd";
+  clearWeights();
+  cpu = null;
+  drag = null;
+  awaiting = null;
+  pendingShot = null;
+  remoteShots = [];
+  remoteAim = null;
+  localSeq = r.seq;
+  round = m.round;
+  firstShooter = m.firstShooter;
+  shotIndex = m.shotIndex;
+  scores = [m.scores[0], m.scores[1]];
+  lastResult = null;
+  for (const tw of m.table) {
+    const w: Weight = { team: tw.team, view: stage.createPuck(tw.team), body: { x: tw.x, d: tw.d, vx: 0, vd: 0, active: true }, status: "play", id: tw.id };
+    w.view.group.position.set(tw.x, 0, -tw.d);
+    world.bodies.push(w.body!);
+    weights.push(w);
+  }
+  for (const team of [0, 1] as Team[]) {
+    for (let i = 0; i < weightsLeft(m, team); i++) weights.push({ team, view: stage.createPuck(team), body: null, status: "rack" });
+  }
+  weights.filter((w) => w.status === "rack").forEach(rackPosition);
+  hud.inset.classList.remove("off");
+  stage.hideAim();
+  if (m.phase === "aim") {
+    if (m.shotIndex === 0 && newRound) banner(`ROUND ${round}`, null, 1.3);
+    nextTurn();
+  } else endRound(m);
+  renderHud();
+}
+
+/* ---------------- Lobby ---------------- */
+
+const lobby = {
+  root: $("lobby"),
+  code: $<HTMLButtonElement>("lobbyCode"),
+  link: $("lobbyLink"),
+  target: $("lobbyTarget"),
+  seats: [$("seat0"), $("seat1")],
+  status: $("lobbyStatus"),
+  start: $<HTMLButtonElement>("btnLobbyStart"),
+  share: $<HTMLButtonElement>("btnShare"),
+  copy: $<HTMLButtonElement>("btnCopy"),
+};
+
+function showLobby(): void {
+  if (!net || hud.menu.classList.contains("show")) return;
+  const code = room?.code ?? net.ticket.code;
+  lobby.code.textContent = code;
+  lobby.link.textContent = roomLink(code).replace(/^https?:\/\//, "");
+  lobby.target.textContent = String(room?.target ?? settings.target);
+  ([0, 1] as Team[]).forEach((s) => {
+    const p = room?.players[s];
+    const role = (s === 0 ? "HOST" : "GUEST") + (s === seat ? " · YOU" : "");
+    lobby.seats[s].innerHTML = p
+      ? `<i class="dot${p.connected ? " on" : ""}"></i><b>${esc(p.name)}</b><span>${p.connected ? role : "OFFLINE"}</span>`
+      : `<i class="dot"></i><b class="wait">Waiting for opponent<em>.</em><em>.</em><em>.</em></b><span>${role}</span>`;
+  });
+  const opp = seat === null ? null : room?.players[other(seat)];
+  let status: string;
+  if (!room || link !== "open") status = link === "reconnecting" ? "Reconnecting…" : "Connecting…";
+  else if (seat === 0) status = opp?.connected ? `${opp.name} is here. Start when you're ready.` : "Share the code or link with your opponent.";
+  else status = room.players[0]?.connected ? `Waiting for ${room.players[0].name} to start…` : "The host is offline. Hang tight.";
+  lobby.status.textContent = status;
+  lobby.start.style.display = seat === 0 ? "" : "none";
+  lobby.start.disabled = !(link === "open" && opp?.connected);
+  hud.net.classList.remove("show");
+  lobby.root.classList.add("show");
+}
+
+function hideLobby(): void {
+  lobby.root.classList.remove("show");
+}
+
+function flash(btn: HTMLButtonElement, text: string): void {
+  const was = btn.dataset.label ?? btn.textContent ?? "";
+  btn.dataset.label = was;
+  btn.textContent = text;
+  setTimeout(() => (btn.textContent = was), 1300);
+}
+
+async function copyText(text: string, btn: HTMLButtonElement): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    flash(btn, "COPIED");
+  } catch {
+    flash(btn, "COPY FAILED");
+  }
+}
+
+lobby.code.onclick = () => {
+  sound.tick();
+  const code = lobby.code.textContent ?? "";
+  void navigator.clipboard?.writeText(code).then(
+    () => {
+      lobby.code.classList.add("copied");
+      setTimeout(() => lobby.code.classList.remove("copied"), 900);
+    },
+    () => {},
+  );
+};
+lobby.copy.onclick = () => {
+  sound.tick();
+  if (net) void copyText(roomLink(net.ticket.code), lobby.copy);
+};
+lobby.share.onclick = async () => {
+  sound.tick();
+  if (!net) return;
+  const url = roomLink(net.ticket.code);
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: "SHUFFLE", text: `Play me at SHUFFLE. Room ${net.ticket.code}`, url });
+      return;
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return;
+    }
+  }
+  void copyText(url, lobby.share);
+};
+lobby.start.onclick = () => {
+  sound.unlock();
+  sound.tick();
+  net?.send({ t: "start" });
+};
+$("btnLobbyLeave").onclick = () => {
+  sound.tick();
+  exitRoom(true);
+};
 
 /* ---------------- Menu ---------------- */
 
 const nameInputs = [$<HTMLInputElement>("nameA"), $<HTMLInputElement>("nameB")];
+const joinCode = $<HTMLInputElement>("joinCode");
+const menuMsgEl = $("menuMsg");
+const board = new Scoreboard($("board"), () => sound.tick());
+
+function openBoard(): void {
+  const names = matchMode === "online" && room ? room.players.map((p) => p?.name ?? "") : settings.names;
+  board.open(names);
+}
+
+function menuMsg(text: string, error = false): void {
+  menuMsgEl.textContent = text;
+  menuMsgEl.classList.toggle("err", error);
+}
 
 function syncMenu(): void {
+  const online = settings.mode === "online";
   nameInputs.forEach((el, i) => (el.value = settings.names[i]));
   document.querySelectorAll<HTMLButtonElement>("#segTarget button").forEach((b) => b.classList.toggle("on", b.dataset.v === String(settings.target)));
   document.querySelectorAll<HTMLButtonElement>("#segMode button").forEach((b) => b.classList.toggle("on", b.dataset.v === settings.mode));
-  $("btnResume").style.display = matchLive ? "" : "none";
+  $("names").classList.toggle("solo", online);
+  $("labelA").textContent = online ? "Your name" : "Orange";
+  $("nameBWrap").style.display = online ? "none" : "";
+  $("rowTarget").style.display = online && net ? "none" : "";
+  const start = $<HTMLButtonElement>("btnStart");
+  start.textContent = online ? "HOST ONLINE GAME" : "NEW GAME";
+  start.style.display = online && net ? "none" : "";
+  $("joinBox").style.display = online && !net ? "" : "none";
+  $("btnResume").style.display = matchLive || net ? "" : "none";
+  $("btnLeave").style.display = net ? "" : "none";
 }
 
 function readMenu(): void {
-  settings.names = nameInputs.map((el, i) => el.value.trim().toUpperCase().slice(0, 12) || DEFAULT_NAMES[i]) as [string, string];
+  settings.names = nameInputs.map((el, i) => el.value.trim().toUpperCase().slice(0, 12) || (settings.mode === "online" && i === 1 ? settings.names[1] : DEFAULT_NAMES[i])) as [string, string];
   localStorage.setItem("shuffle.settings", JSON.stringify(settings));
 }
 
 let resumePhase: Phase = "aim";
 function openMenu(): void {
-  if (phase !== "menu") resumePhase = phase;
-  phase = "menu";
+  // Online play keeps running under the menu; the room doesn't pause for one player's menu.
+  if (!isOnline() && phase !== "menu") {
+    resumePhase = phase;
+    phase = "menu";
+  }
+  menuMsg("");
   syncMenu();
+  hideLobby();
   hud.menu.classList.add("show");
   hud.card.classList.remove("show");
-  if (!matchLive) stage.setCamera("overview");
+  if (!matchLive && !isOnline()) stage.setCamera("overview");
 }
 
 function closeMenu(): void {
   hud.menu.classList.remove("show");
 }
 
-document.querySelectorAll<HTMLElement>(".seg").forEach((seg) =>
+document.querySelectorAll<HTMLElement>(".seg[id]").forEach((seg) =>
   seg.addEventListener("click", (e) => {
     const b = (e.target as HTMLElement).closest("button");
     if (!b) return;
     sound.tick();
+    readMenu();
     if (seg.id === "segTarget") settings.target = b.dataset.v === "15" ? 15 : 21;
     else {
-      settings.mode = b.dataset.v === "cpu" ? "cpu" : "2p";
-      if (settings.mode === "cpu" && nameInputs[1].value.trim().toUpperCase() === DEFAULT_NAMES[1]) nameInputs[1].value = "CPU";
-      if (settings.mode === "2p" && nameInputs[1].value.trim().toUpperCase() === "CPU") nameInputs[1].value = DEFAULT_NAMES[1];
+      settings.mode = b.dataset.v === "cpu" ? "cpu" : b.dataset.v === "online" ? "online" : "2p";
+      if (settings.mode === "cpu" && nameInputs[1].value.trim().toUpperCase() === DEFAULT_NAMES[1]) settings.names[1] = "CPU";
+      if (settings.mode === "2p" && nameInputs[1].value.trim().toUpperCase() === "CPU") settings.names[1] = DEFAULT_NAMES[1];
     }
-    readMenu();
+    localStorage.setItem("shuffle.settings", JSON.stringify(settings));
+    menuMsg("");
     syncMenu();
   }),
 );
+
+let menuBusy = false;
+async function withBusy(label: string, fn: () => Promise<void>): Promise<void> {
+  if (menuBusy) return;
+  menuBusy = true;
+  menuMsg(label);
+  document.querySelectorAll<HTMLButtonElement>("#btnStart, #btnJoin").forEach((b) => (b.disabled = true));
+  try {
+    await fn();
+  } catch (e) {
+    menuMsg(e instanceof Error ? e.message : "Something went wrong.", true);
+  } finally {
+    menuBusy = false;
+    document.querySelectorAll<HTMLButtonElement>("#btnStart, #btnJoin").forEach((b) => (b.disabled = false));
+  }
+}
+
+function hostOnline(): Promise<void> {
+  return withBusy("Creating a room…", async () => {
+    const t = await createRoom(settings.names[0], settings.target);
+    enterRoom(t);
+  });
+}
+
+function joinOnline(code: string): Promise<void> {
+  if (!isRoomCode(code)) {
+    menuMsg("Room codes are 5 letters and numbers, like K7QMX.", true);
+    return Promise.resolve();
+  }
+  const saved = loadTicket();
+  if (saved?.code === code) {
+    enterRoom(saved);
+    return Promise.resolve();
+  }
+  return withBusy("Joining…", async () => {
+    const t = await joinRoom(code, settings.names[0]);
+    enterRoom(t);
+  });
+}
+
+function prepareJoin(code: string): void {
+  settings.mode = "online";
+  syncMenu();
+  joinCode.value = code;
+  menuMsg(`Room ${code}. Enter your name and tap JOIN.`);
+  roomPreview(code).then(
+    (p) => {
+      if (joinCode.value !== code) return;
+      if (!p) menuMsg(`Room ${code} has closed or expired.`, true);
+      else if (!p.open) menuMsg(`Room ${code} already has two players.`, true);
+      else menuMsg(`${p.host}'s room · play to ${p.target}. Enter your name and tap JOIN.`);
+    },
+    () => {},
+  );
+}
 
 $("btnStart").onclick = () => {
   sound.unlock();
   sound.tick();
   readMenu();
+  if (settings.mode === "online") return void hostOnline();
+  if (net) exitRoom(true);
   closeMenu();
-  newMatch();
+  newMatch(settings.mode === "cpu" ? "cpu" : "2p");
 };
+$("joinForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  sound.unlock();
+  sound.tick();
+  readMenu();
+  joinCode.blur();
+  void joinOnline(normalizeCode(joinCode.value));
+});
+joinCode.addEventListener("input", () => {
+  const v = normalizeCode(joinCode.value);
+  if (v !== joinCode.value) joinCode.value = v;
+});
 $("btnResume").onclick = () => {
   readMenu();
   closeMenu();
+  if (isOnline()) {
+    if (!room?.match) showLobby();
+    else if (cardArgs) showCard(...cardArgs);
+    renderHud();
+    return;
+  }
   phase = resumePhase;
   if (cardArgs) showCard(...cardArgs);
   renderHud();
+};
+$("btnLeave").onclick = () => {
+  sound.tick();
+  exitRoom(true);
+};
+$("btnBoard").onclick = () => {
+  sound.tick();
+  openBoard();
 };
 $("btnMenu").onclick = () => {
   sound.tick();
@@ -518,10 +1125,13 @@ interface Drag {
 let drag: Drag | null = null;
 const pullRange = () => Math.min(440, Math.max(220, window.innerHeight * 0.48));
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+const shareAim = (x: number, angle = 0, power = 0) => {
+  if (isOnline()) net!.sendAim({ x, angle, power });
+};
 
 canvas.addEventListener("pointerdown", (e) => {
   sound.unlock();
-  if (phase !== "aim" || !current || isCpuTurn()) return;
+  if (!canShoot() || !current) return;
   try {
     canvas.setPointerCapture(e.pointerId);
   } catch {
@@ -531,6 +1141,7 @@ canvas.addEventListener("pointerdown", (e) => {
   const hit = stage.pickTable(e.clientX, e.clientY);
   if (hit && hit.d < 2.2 && hit.d > -0.6 && Math.abs(hit.x) < TABLE.width / 2 + 0.15) x = clamp(hit.x, -LANE, LANE);
   placeAim(x);
+  shareAim(x);
   drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x, samples: [{ x: e.clientX, y: e.clientY, t: e.timeStamp }], mode: "idle", power: 0, angle: 0 };
   hud.hint.classList.remove("show");
 });
@@ -548,11 +1159,13 @@ canvas.addEventListener("pointermove", (e) => {
     placeAim(drag.x, drag.power * 0.2);
     stage.showAim(drag.x, TABLE.launchD, drag.angle, drag.power, current.team);
     setPower(drag.power);
+    shareAim(drag.x, drag.angle, drag.power);
   } else {
     drag.mode = dy < -10 ? "flick" : "idle";
     placeAim(drag.x);
     stage.hideAim();
     setPower(null);
+    shareAim(drag.x);
   }
 });
 
@@ -560,7 +1173,7 @@ function endDrag(e: PointerEvent, cancelled: boolean): void {
   if (!drag || e.pointerId !== drag.id) return;
   const d = drag;
   drag = null;
-  if (!current) return;
+  if (!current || phase !== "aim") return;
   if (!cancelled && d.mode === "pull" && d.power > 0.02) {
     launch(d.x, d.angle, speedOf(d.power));
     return;
@@ -586,6 +1199,8 @@ function endDrag(e: PointerEvent, cancelled: boolean): void {
   placeAim(d.x);
   stage.hideAim();
   setPower(null);
+  shareAim(d.x);
+  hud.hint.textContent = turnHint();
   hud.hint.classList.add("show");
 }
 canvas.addEventListener("pointerup", (e) => endDrag(e, false));
@@ -614,9 +1229,27 @@ function stepCpu(dt: number): void {
   }
 }
 
+function stepRemoteAim(dt: number): void {
+  if (!remoteAim || !current) return;
+  const a = remoteAim;
+  const k = 1 - Math.exp(-dt * 14);
+  a.x += (a.target.x - a.x) * k;
+  a.angle += (a.target.angle - a.angle) * k;
+  a.power += (a.target.power - a.power) * k;
+  placeAim(a.x, a.power * 0.2);
+  if (a.power > 0.02) {
+    stage.showAim(a.x, TABLE.launchD, a.angle, a.power, current.team);
+    setPower(a.power);
+  } else {
+    stage.hideAim();
+    setPower(null);
+  }
+}
+
 function update(dt: number): void {
   if (bannerTimer > 0 && (bannerTimer -= dt) <= 0) hud.banner.classList.remove("show");
   if (phase === "aim" && isCpuTurn()) stepCpu(dt);
+  if (phase === "aim" && isRemoteTurn()) stepRemoteAim(dt);
 
   let slideSpeed = 0;
   if (phase === "rolling") {
@@ -651,10 +1284,19 @@ function update(dt: number): void {
   } else if (phase === "resolving" && !falling) {
     resolveTimer -= dt;
     if (resolveTimer <= 0) {
-      shotIndex++;
-      if (shotIndex >= TABLE.weightsPerSide * 2) endRound();
-      else nextTurn();
+      if (matchMode === "online") {
+        phase = "settle";
+        settleWait = 0;
+      } else {
+        shotIndex++;
+        if (shotIndex >= TABLE.weightsPerSide * 2) endRound();
+        else nextTurn();
+      }
     }
+  }
+  if (phase === "settle") {
+    settleWait += dt;
+    trySettle();
   }
 
   if (labels.length) {
@@ -684,6 +1326,15 @@ document.addEventListener("visibilitychange", () => {
 layout();
 stage.setCamera("overview");
 stage.snapCamera();
-openMenu();
 renderHud();
+void flushUnsent();
+
+const linkCode = codeFromLocation(location.pathname, location.search);
+const saved = loadTicket();
+if (saved && (!linkCode || linkCode === saved.code)) enterRoom(saved, true);
+else {
+  openMenu();
+  if (linkCode) prepareJoin(linkCode);
+  else if (location.pathname !== "/") history.replaceState(null, "", "/");
+}
 requestAnimationFrame(frame);
