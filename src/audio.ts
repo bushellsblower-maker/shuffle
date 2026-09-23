@@ -14,7 +14,7 @@ export class Sound {
   private white: AudioBuffer | null = null;
   private sfx: GainNode | null = null;
   private room: GainNode | null = null;
-  private lastClack = 0;
+  private lastClack = -1;
   muted = localStorage.getItem("shuffle.muted") === "1";
 
   unlock(): void {
@@ -55,9 +55,9 @@ export class Sound {
     for (let i = 0; i < w.length; i++) w[i] = Math.random() * 2 - 1;
 
     const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -16;
-    comp.knee.value = 12;
-    comp.ratio.value = 4;
+    comp.threshold.value = -9;
+    comp.knee.value = 8;
+    comp.ratio.value = 3;
     comp.attack.value = 0.002;
     comp.release.value = 0.18;
     comp.connect(this.master);
@@ -182,7 +182,7 @@ export class Sound {
     const v = Math.min(1, impulse / 2.6);
     if (t - this.lastClack < 0.03 && v < 0.5) return;
     this.lastClack = t;
-    const out = this.out(0.25 + v * 0.75, 0.22 + v * 0.18);
+    const out = this.out(0.35 + v * 1.1, 0.22 + v * 0.18);
     const tone = ctx.createBiquadFilter();
     tone.type = "lowpass";
     tone.frequency.value = 2600 + v * 9000;
@@ -196,7 +196,7 @@ export class Sound {
   launch(power: number): void {
     if (!this.ready()) return;
     const t = this.ctx!.currentTime;
-    const out = this.out(0.55 + power * 0.45, 0.08);
+    const out = this.out(0.7 + power * 0.6, 0.08);
     this.osc("sine", 120 + power * 30, t, 0.14, out, 0.9, 0.16, 48);
     this.osc("triangle", 240, t, 0.05, out, 0.18, 0.045, 150);
     this.noiseHit(t, out, 0.45 + power * 0.3, 0.07, "lowpass", 1600, 0.6, 400);
@@ -207,7 +207,7 @@ export class Sound {
   drop(): void {
     if (!this.ready()) return;
     const t = this.ctx!.currentTime;
-    const out = this.out(0.9, 0.2);
+    const out = this.out(1.4, 0.2);
     this.osc("sine", 105, t, 0.22, out, 1, 0.26, 42);
     this.noiseHit(t, out, 0.55, 0.09, "lowpass", 900, 0.8, 250);
     this.noiseHit(t, out, 0.2, 0.03, "bandpass", 2600, 1.2);
@@ -218,7 +218,7 @@ export class Sound {
   score(points: number): void {
     if (!this.ready()) return;
     const t = this.ctx!.currentTime;
-    const out = this.out(0.5, 0.55);
+    const out = this.out(0.35, 0.55);
     const chord = [392, 493.9, 587.3, 784, 987.8, 1174.7];
     const n = Math.min(chord.length, 3 + Math.floor(points / 2));
     for (let i = 0; i < n; i++) this.bell(chord[i], t + i * 0.045, out, 0.22, 0.9 + i * 0.08);
@@ -230,7 +230,7 @@ export class Sound {
   blank(): void {
     if (!this.ready()) return;
     const t = this.ctx!.currentTime;
-    const out = this.out(0.55, 0.35);
+    const out = this.out(0.4, 0.35);
     this.pluck(220, t, out, 0.35, 0.35);
     this.pluck(164.8, t + 0.16, out, 0.35, 0.55);
     this.osc("sine", 82.4, t + 0.16, 0.5, out, 0.4, 0.5, 70);
@@ -240,7 +240,7 @@ export class Sound {
   win(): void {
     if (!this.ready()) return;
     const t = this.ctx!.currentTime;
-    const out = this.out(0.5, 0.5);
+    const out = this.out(0.3, 0.5);
     const hits: [number[], number, number][] = [
       [[392, 523.3, 659.3], 0, 0.14],
       [[392, 523.3, 659.3], 0.16, 0.14],
@@ -257,7 +257,7 @@ export class Sound {
   tick(): void {
     if (!this.ready()) return;
     const t = this.ctx!.currentTime;
-    const out = this.out(0.5, 0.05);
+    const out = this.out(0.8, 0.05);
     this.noiseHit(t, out, 0.5, 0.012, "bandpass", 3800, 1.5);
     this.osc("sine", 1900, t, 0.02, out, 0.12, 0.018, 1500);
   }
