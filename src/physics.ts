@@ -112,6 +112,12 @@ export class World {
   }
 }
 
+/** Closed-form distance to rest from `speed` under friction + drag (cheap enough to call per frame). */
+export function stoppingDistance(speed: number): number {
+  if (speed <= 0) return 0;
+  return speed / DRAG - (FRICTION / (DRAG * DRAG)) * Math.log1p((DRAG * speed) / FRICTION);
+}
+
 /** How far a lone weight launched at `speed` slides before stopping. */
 export function slideDistance(speed: number): number {
   const b: Body = { x: 0, d: 0, vx: 0, vd: speed, active: true };

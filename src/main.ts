@@ -19,6 +19,7 @@ import {
 } from "./rules.ts";
 import { GUTTER_W, GUTTER_Y, PIT_LEN, Stage, TEAM_COLORS, type PuckView } from "./scene.ts";
 import { Scoreboard, flushUnsent, recordGame } from "./scoreboard.ts";
+import { followLead } from "./smooth.ts";
 
 type Mode = "2p" | "cpu" | "online";
 interface Settings {
@@ -98,6 +99,8 @@ const lastX: [number, number] = [0, 0];
 let labels: { el: HTMLElement; w: Weight }[] = [];
 let cpu: { shot: Shot; t: number; fromX: number } | null = null;
 let endToken = 0;
+/** Follow-camera target for the current shot; only moves forward so collisions can't yank it back. */
+let followD: number = TABLE.launchD;
 
 /* Online */
 type ShotMsg = Extract<ServerMsg, { t: "shot" }>;
@@ -325,7 +328,8 @@ function launch(x: number, angle: number, speed: number, remote = false): void {
   phase = "rolling";
   resolveTimer = 0;
   stage.hideAim();
-  stage.setCamera("follow", TABLE.launchD);
+  followD = TABLE.launchD;
+  stage.setCamera("follow", followD);
   hud.hint.classList.remove("show");
   setPower(null);
   sound.launch(powerOf(speed));
@@ -1264,16 +1268,15 @@ function update(dt: number): void {
         else if (ev.edge === "side") banner("GUTTER", null, 1);
       }
     }
-    let lead: number = TABLE.launchD;
     for (const w of weights) {
       if (w.status !== "play" || !w.body) continue;
       const b = w.body;
       w.view.group.position.set(b.x, 0, -b.d);
       const sp = Math.hypot(b.vx, b.vd);
       slideSpeed += sp;
-      if (sp > 0.05) lead = Math.max(lead, b.d);
+      followD = Math.max(followD, followLead(b.d, b.vd, sp));
     }
-    if (lead > TABLE.launchD) stage.setCamera("follow", lead);
+    stage.setCamera("follow", followD);
   }
   const falling = stepFalls(dt);
   sound.slide(slideSpeed);
