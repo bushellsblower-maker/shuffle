@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#0a0b0e" />
+    <meta name="description" content="SHUFFLE — a 3D table shuffleboard game. Pull back, release, hang it off the end." />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>SHUFFLE · 3D table shuffleboard</title>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="hud">
+      <header class="bar">
+        <div class="team t0" id="team0"><span class="name"></span><span class="score">0</span><span class="pips"></span></div>
+        <div class="mid">
+          <div class="round">RND <b id="round">1</b></div>
+          <div class="target">TO <b id="target">21</b></div>
+        </div>
+        <div class="team t1" id="team1"><span class="name"></span><span class="score">0</span><span class="pips"></span></div>
+      </header>
+
+      <div id="inset" class="inset"><span>HEAD</span></div>
+      <div id="banner" class="banner"></div>
+      <div id="hint" class="hint"></div>
+      <div id="power" class="power"><div class="fill"></div><div class="last"></div><span>PWR</span></div>
+      <div id="labels"></div>
+
+      <div class="tools">
+        <button id="btnSound" class="icon" aria-label="Toggle sound">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" /><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" /><path class="x" d="M16 9l5 6M21 9l-5 6" /></svg>
+        </button>
+        <button id="btnMenu" class="icon" aria-label="Menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+        </button>
+      </div>
+
+      <section id="roundCard" class="card">
+        <div class="k"></div>
+        <div class="big"></div>
+        <div class="detail"></div>
+        <div class="scoreline"></div>
+        <div class="actions"></div>
+      </section>
+
+      <section id="menu" class="modal">
+        <div class="panel">
+          <h1 class="logo">SHUFFLE<small>3D table shuffleboard</small></h1>
+          <div class="names">
+            <label class="t0">Orange <input id="nameA" maxlength="12" autocomplete="off" spellcheck="false" /></label>
+            <label class="t1">Cyan <input id="nameB" maxlength="12" autocomplete="off" spellcheck="false" /></label>
+          </div>
+          <div class="row">
+            <span>Play to</span>
+            <div class="seg" id="segTarget"><button data-v="15">15</button><button data-v="21">21</button></div>
+          </div>
+          <div class="row">
+            <span>Opponent</span>
+            <div class="seg" id="segMode"><button data-v="2p">2 players</button><button data-v="cpu">vs CPU</button></div>
+          </div>
+          <button id="btnStart" class="go">NEW GAME</button>
+          <button id="btnResume" class="ghost">RESUME</button>
+          <details class="rules">
+            <summary>How to play</summary>
+            <ul>
+              <li><b>Pull back</b> anywhere and release to slide. Drag sideways to angle the shot. Touch low on the table to pick your lane. Or <b>flick</b> forward.</li>
+              <li>Sides alternate, 4 weights each. A weight must be fully past the red <b>foul line</b> or it's removed. Gutters are out.</li>
+              <li>Zones score <b>1–4</b>. A <b>hanger</b> over the far edge scores <b>+1</b> on top of its zone.</li>
+              <li>Only the side with the furthest weight scores: every one of its weights beyond the opponent's best.</li>
+              <li>The side that scored throws first next round. First to the target wins.</li>
+            </ul>
+          </details>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
