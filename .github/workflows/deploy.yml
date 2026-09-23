@@ -1,0 +1,40 @@
+# Publishes Worker `shuffle` (static assets + custom domain shuffle.cybush.uk).
+# Alternative: connect this repo in Cloudflare (Workers → shuffle → Settings →
+# Builds) and use Workers Builds instead. Do not publish from a laptop.
+
+name: Publish to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-shuffle
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CI: true
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Require GitHub Cloudflare secrets
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Add GitHub Actions secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID on bushellsblower-maker/shuffle (Settings → Secrets and variables → Actions), then re-run this workflow. Secrets on other repos (shufl, Adonis) do not carry over."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm test
+      - name: Build and publish Worker shuffle
+        run: npm run deploy
