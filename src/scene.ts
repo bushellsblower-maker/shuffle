@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { TABLE, type Team } from "./rules.ts";
+import { smoothDamp, smoothMin, type Spring } from "./smooth.ts";
 import { aimTexture, concreteTexture, tableTexture } from "./textures.ts";
 
 export const TEAM_COLORS = ["#ff7a1a", "#27d3ff"] as const;
@@ -16,6 +17,8 @@ const RAIL_W = 0.05;
 const FLOOR_Y = -0.92;
 /** Lamp fixtures render in the main view only, never in the top-down head cam. */
 const LAMP_LAYER = 1;
+/** Follow-cam spring time (s). Paired with the look-ahead in main.ts, which cancels most of its lag. */
+export const FOLLOW_SMOOTH = 0.26;
 
 export type CameraMode = "aim" | "follow" | "head" | "overview";
 
@@ -50,11 +53,20 @@ export class Stage {
   inset: Rect | null = null;
 
   private mode: CameraMode = "overview";
-  private followD: number = TABLE.launchD;
+  /** Follow cam: where the caller wants to look (`focusTarget`), and the spring-smoothed value used. */
+  private focusTarget: number = TABLE.launchD;
+  private focus: Spring = { value: TABLE.launchD, vel: 0 };
   private camPos = new THREE.Vector3(0, 3, 4);
   private camLook = new THREE.Vector3(0, 0, -3);
   private wantPos = new THREE.Vector3();
   private wantLook = new THREE.Vector3();
+  /**
+   * Mode changes ease out an offset from the new shot instead of lerping toward
+   * a moving target, so the follow cam tracks with no lag once blended in.
+   */
+  private posOff = new THREE.Vector3();
+  private lookOff = new THREE.Vector3();
+  private blendRate = 3;
   private time = 0;
   private neon: THREE.MeshBasicMaterial[] = [];
   private tmp = new THREE.Vector3();
@@ -311,15 +323,23 @@ export class Stage {
     this.aim.visible = false;
   }
 
-  setCamera(mode: CameraMode, followD = this.followD): void {
+  setCamera(mode: CameraMode, followD?: number): void {
+    if (followD !== undefined) this.focusTarget = followD;
+    if (mode === this.mode) return;
+    if (mode === "follow") this.focus = { value: this.focusTarget, vel: 0 };
     this.mode = mode;
-    this.followD = followD;
+    this.computeWanted();
+    this.posOff.subVectors(this.camPos, this.wantPos);
+    this.lookOff.subVectors(this.camLook, this.wantLook);
+    this.blendRate = mode === "follow" ? 6 : 3;
   }
 
   snapCamera(): void {
     this.computeWanted();
     this.camPos.copy(this.wantPos);
     this.camLook.copy(this.wantLook);
+    this.posOff.set(0, 0, 0);
+    this.lookOff.set(0, 0, 0);
   }
 
   private computeWanted(): void {
@@ -335,9 +355,10 @@ export class Stage {
         }
         break;
       case "follow": {
-        const d = Math.min(this.followD, L - 1.2);
+        // Soft limits: a hard min() makes the camera stop dead and kinks its pitch near the far end.
+        const d = smoothMin(this.focus.value, L - 1.2, 0.3);
         this.wantPos.set(0, portrait ? 1.15 : 0.85, -d + (portrait ? 2.1 : 1.8));
-        this.wantLook.set(0, 0, -Math.min(d + 2.6, L));
+        this.wantLook.set(0, 0, -smoothMin(d + 2.6, L, 0.35));
         break;
       }
       case "head":
@@ -377,10 +398,13 @@ export class Stage {
 
   render(dt: number): void {
     this.time += dt;
+    if (this.mode === "follow") smoothDamp(this.focus, this.focusTarget, FOLLOW_SMOOTH, dt);
     this.computeWanted();
-    const k = 1 - Math.exp(-dt * (this.mode === "follow" ? 5 : 3));
-    this.camPos.lerp(this.wantPos, k);
-    this.camLook.lerp(this.wantLook, k);
+    const keep = Math.exp(-dt * this.blendRate);
+    this.posOff.multiplyScalar(keep);
+    this.lookOff.multiplyScalar(keep);
+    this.camPos.addVectors(this.wantPos, this.posOff);
+    this.camLook.addVectors(this.wantLook, this.lookOff);
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
 

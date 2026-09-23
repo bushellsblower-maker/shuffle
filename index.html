@@ -21,6 +21,7 @@
         <div class="team t1" id="team1"><span class="name"></span><span class="score">0</span><span class="pips"></span></div>
       </header>
 
+      <div id="net" class="net"><i></i><span></span></div>
       <div id="inset" class="inset"><span>HEAD</span></div>
       <div id="banner" class="banner"></div>
       <div id="hint" class="hint"></div>
@@ -47,20 +48,29 @@
       <section id="menu" class="modal">
         <div class="panel">
           <h1 class="logo">SHUFFLE<small>3D table shuffleboard</small></h1>
-          <div class="names">
-            <label class="t0">Orange <input id="nameA" maxlength="12" autocomplete="off" spellcheck="false" /></label>
-            <label class="t1">Cyan <input id="nameB" maxlength="12" autocomplete="off" spellcheck="false" /></label>
+          <div class="seg wide" id="segMode"><button data-v="2p">Pass &amp; play</button><button data-v="cpu">vs CPU</button><button data-v="online">Online</button></div>
+          <div class="names" id="names">
+            <label class="t0"><span id="labelA">Orange</span> <input id="nameA" maxlength="12" autocomplete="off" spellcheck="false" enterkeyhint="done" /></label>
+            <label class="t1" id="nameBWrap">Cyan <input id="nameB" maxlength="12" autocomplete="off" spellcheck="false" enterkeyhint="done" /></label>
           </div>
-          <div class="row">
+          <div class="row" id="rowTarget">
             <span>Play to</span>
             <div class="seg" id="segTarget"><button data-v="15">15</button><button data-v="21">21</button></div>
           </div>
-          <div class="row">
-            <span>Opponent</span>
-            <div class="seg" id="segMode"><button data-v="2p">2 players</button><button data-v="cpu">vs CPU</button></div>
-          </div>
+          <div id="menuMsg" class="msg" role="status" aria-live="polite"></div>
           <button id="btnStart" class="go">NEW GAME</button>
-          <button id="btnResume" class="ghost">RESUME</button>
+          <div id="joinBox" class="join">
+            <div class="or"><span>or join a friend's room</span></div>
+            <form class="joinrow" id="joinForm">
+              <input id="joinCode" placeholder="CODE" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go" aria-label="Room code" />
+              <button id="btnJoin" class="go" type="submit">JOIN</button>
+            </form>
+          </div>
+          <div class="actions">
+            <button id="btnResume" class="ghost">RESUME</button>
+            <button id="btnLeave" class="ghost">LEAVE ROOM</button>
+            <button id="btnBoard" class="ghost">SCOREBOARD</button>
+          </div>
           <details class="rules">
             <summary>How to play</summary>
             <ul>
@@ -69,8 +79,37 @@
               <li>Zones score <b>1–4</b>. A <b>hanger</b> over the far edge scores <b>+1</b> on top of its zone.</li>
               <li>Only the side with the furthest weight scores: every one of its weights beyond the opponent's best.</li>
               <li>The side that scored throws first next round. First to the target wins.</li>
+              <li><b>Online:</b> host a room and send the 5-letter code or link. Each phone throws its own weights; the room keeps the score.</li>
             </ul>
           </details>
+        </div>
+      </section>
+
+      <section id="lobby" class="modal">
+        <div class="panel lobby">
+          <div class="kick">ONLINE ROOM · PLAY TO <b id="lobbyTarget">21</b></div>
+          <button id="lobbyCode" class="code" aria-label="Copy room code">·····</button>
+          <div id="lobbyLink" class="lobbylink"></div>
+          <div class="actions">
+            <button id="btnShare" class="ghost">SHARE LINK</button>
+            <button id="btnCopy" class="ghost">COPY LINK</button>
+          </div>
+          <ul class="seats">
+            <li id="seat0" class="t0"></li>
+            <li id="seat1" class="t1"></li>
+          </ul>
+          <div id="lobbyStatus" class="status"></div>
+          <button id="btnLobbyStart" class="go">START MATCH</button>
+          <button id="btnLobbyLeave" class="ghost">LEAVE</button>
+        </div>
+      </section>
+
+      <section id="board" class="modal">
+        <div class="panel board">
+          <h2>SCOREBOARD<small>shared with SHUFL</small></h2>
+          <div class="seg wide"><button data-tab="leaders" class="on">Leaders</button><button data-tab="recent">Recent</button></div>
+          <div class="list"></div>
+          <button class="ghost" data-close>CLOSE</button>
         </div>
       </section>
     </div>
