@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "shuffle",
+  "main": "worker/index.ts",
   "compatibility_date": "2026-09-21",
   "workers_dev": true,
   "preview_urls": true,
@@ -15,9 +16,36 @@
       "custom_domain": true
     }
   ],
-  // Assets-only Worker: `npm run build` writes the Vite bundle to ./dist.
+  // `npm run build` writes the Vite bundle to ./dist. Only /api/* reaches the
+  // Worker; everything else (including /join/CODE) is served from assets.
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
-  }
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // One Durable Object per online room, named by the room code.
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ROOMS",
+        "class_name": "Room"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Room"]
+    }
+  ],
+  // SHUFL's existing database. Both Workers read and write the same `games`
+  // table and `leaderboard` view, so matches show up in either app.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "shufl",
+      "database_id": "41df98c1-d6bd-479a-b2c9-8f1b8c83966b"
+    }
+  ]
 }
