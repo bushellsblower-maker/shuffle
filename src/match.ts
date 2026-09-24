@@ -7,6 +7,8 @@
 import { MAX_ANGLE, MIN_SPEED } from "./ai.ts";
 import { MAX_SPEED, World, sandSeed, type Body } from "./physics.ts";
 import {
+  LANE,
+  START,
   TABLE,
   endForRound,
   isLive,
@@ -19,7 +21,7 @@ import {
   type Team,
 } from "./rules.ts";
 
-export const LANE = TABLE.width / 2 - TABLE.puckRadius - 0.02;
+export { LANE };
 export const SHOTS_PER_ROUND = TABLE.weightsPerSide * 2;
 /** Simulated seconds after which a shot is force-stopped (a lone max-power slide takes ~4s). */
 const MAX_SIM_SECONDS = 30;
@@ -29,6 +31,8 @@ export interface ShotInput {
   x: number;
   angle: number;
   speed: number;
+  /** Launch distance from the shooter's end, inside `START`; omitted means `TABLE.launchD`. */
+  d?: number;
 }
 
 /** A weight resting in play. `id` is the shot index within the round that threw it. */
@@ -119,18 +123,20 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
 /** Accept a shot from the network. Values a real gesture can produce pass through unchanged. */
 export function parseShot(v: unknown): ShotInput | null {
   if (!v || typeof v !== "object") return null;
-  const { x, angle, speed } = v as Record<string, unknown>;
+  const { x, angle, speed, d } = v as Record<string, unknown>;
   if (!finite(x) || !finite(angle) || !finite(speed)) return null;
   const eps = 1e-6;
   if (Math.abs(x) > LANE + eps || Math.abs(angle) > MAX_ANGLE + eps) return null;
   if (speed < MIN_SPEED - eps || speed > MAX_SPEED + eps) return null;
-  return { x, angle, speed };
+  if (d === undefined) return { x, angle, speed };
+  if (!finite(d) || d < START.minD - eps || d > START.maxD + eps) return null;
+  return { x, angle, speed, d };
 }
 
 export function launchBody(shot: ShotInput): Body {
   return {
     x: shot.x,
-    d: TABLE.launchD,
+    d: shot.d ?? TABLE.launchD,
     vx: shot.speed * Math.sin(shot.angle),
     vd: shot.speed * Math.cos(shot.angle),
     active: true,

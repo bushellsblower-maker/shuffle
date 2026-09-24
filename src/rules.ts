@@ -7,7 +7,10 @@ export const TABLE = {
   width: 0.9,
   puckRadius: 0.055,
   puckHeight: 0.042,
+  /** Where a weight is set down for a throw unless the shooter moves it. */
   launchD: 0.5,
+  /** The thin line painted just ahead of the launch spot; a weight is thrown from completely behind it. */
+  startLine: 0.655,
   foul: 4.6,
   /** Start of zones 1..4 (trailing edge of a weight must be past the line). */
   zones: [4.6, 5.6, 6.35, 6.9] as const,
@@ -35,6 +38,23 @@ export function endForRound(round: number): End {
  */
 export function toTable(end: End, x: number, d: number): { x: number; d: number } {
   return end === 0 ? { x, d } : { x: -x, d: TABLE.length - d };
+}
+
+/** Furthest a thrown weight's centre may sit from the middle of the table. */
+export const LANE = TABLE.width / 2 - TABLE.puckRadius - 0.02;
+
+/**
+ * Where the shooter may set the weight down before a throw (shooter-relative):
+ * anywhere across the lane, clear of the near edge, with its leading edge no
+ * further than the start line. The default launch spot is inside it.
+ */
+export const START = {
+  minD: 0.15,
+  maxD: TABLE.startLine - TABLE.puckRadius,
+} as const;
+
+export function clampStart(x: number, d: number): { x: number; d: number } {
+  return { x: Math.max(-LANE, Math.min(LANE, x)), d: Math.max(START.minD, Math.min(START.maxD, d)) };
 }
 
 export interface RestingWeight {

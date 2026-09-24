@@ -142,7 +142,7 @@ export function markingsTexture(maxAnisotropy: number): THREE.CanvasTexture {
     g.restore();
 
     g.fillStyle = "rgba(22,22,26,0.7)";
-    band(TABLE.launchD + TABLE.puckRadius + 0.1, 0.01);
+    band(TABLE.startLine, 0.01);
   }
 
   const tex = new THREE.CanvasTexture(c);

@@ -38,6 +38,8 @@ export interface AimInput {
   x: number;
   angle: number;
   power: number;
+  /** Where the shooter has set the weight down; omitted means `TABLE.launchD`. */
+  d?: number;
 }
 
 export type ClientMsg =
@@ -94,8 +96,12 @@ export function parseClientMsg(raw: string): ClientMsg | null {
     case "aim": {
       if (m.aim === null) return { t: "aim", aim: null };
       const a = m.aim as Record<string, unknown> | undefined;
-      if (!a || ![a.x, a.angle, a.power].every((n) => typeof n === "number" && Number.isFinite(n))) return null;
-      return { t: "aim", aim: { x: a.x as number, angle: a.angle as number, power: a.power as number } };
+      const num = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+      if (!a || ![a.x, a.angle, a.power].every(num)) return null;
+      const aim: AimInput = { x: a.x as number, angle: a.angle as number, power: a.power as number };
+      if (num(a.d)) aim.d = a.d;
+      else if (a.d !== undefined) return null;
+      return { t: "aim", aim };
     }
     default:
       return null;

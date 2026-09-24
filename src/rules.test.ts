@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  LANE,
+  START,
   TABLE,
+  clampStart,
   endForRound,
   isLive,
   isHanger,
@@ -33,6 +36,16 @@ test("hanger adds +1 on top of its zone", () => {
   assert.ok(isHanger(d));
   assert.deepEqual(weightValue(d), { zone: 4, hanger: true, value: 5 });
   assert.equal(isHanger(TABLE.length - R - 0.001), false);
+});
+
+test("the start box sits behind the start line, clear of the near edge, and holds the default spot", () => {
+  assert.ok(Math.abs(START.maxD + R - TABLE.startLine) < 1e-9, "leading edge stops on the start line");
+  assert.ok(START.minD - R > 0.05, "the back of the weight stays on the table with room to draw it back");
+  assert.ok(TABLE.launchD >= START.minD && TABLE.launchD <= START.maxD);
+  assert.ok(TABLE.startLine < TABLE.length - TABLE.foul, "the whole box is well behind the near end's foul line");
+  assert.deepEqual(clampStart(0.1, TABLE.launchD), { x: 0.1, d: TABLE.launchD }, "a legal spot is left alone");
+  assert.deepEqual(clampStart(5, 5), { x: LANE, d: START.maxD });
+  assert.deepEqual(clampStart(-5, -5), { x: -LANE, d: START.minD });
 });
 
 test("short of the foul line or off the table is dead", () => {
