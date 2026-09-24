@@ -49,6 +49,35 @@ export const CAMERA = {
   envSmooth: 0.4,
 } as const;
 
+/**
+ * Free roam from the menu. World frame, metres; the hall walls are at x = ±8.6
+ * and 2.2 m past each end of the table, the floor at y = -0.92.
+ */
+export const ROAM = {
+  /** Box the camera stays inside: just inside the walls, above the floor, under a notional ceiling. */
+  camera: { x: 8.1, yMin: -0.55, yMax: 4.6, zMin: -L - 2.05, zMax: 2.05 },
+  /** Box the orbit pivot can be panned around in. */
+  pivot: { x: 6, yMin: -0.6, yMax: 1.2, zMin: -L - 1.2, zMax: 1.2 },
+  minDistance: 0.8,
+  maxDistance: 9,
+  /** Furthest the camera can drop from overhead (radians from straight up): just above level. */
+  maxPolar: Math.PI * 0.48,
+} as const;
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+/** Keep a free-roam camera and its pivot inside the hall, in place. */
+export function clampRoam(pos: Vec3, pivot: Vec3): void {
+  const c = ROAM.camera;
+  const p = ROAM.pivot;
+  pos.x = clamp(pos.x, -c.x, c.x);
+  pos.y = clamp(pos.y, c.yMin, c.yMax);
+  pos.z = clamp(pos.z, c.zMin, c.zMax);
+  pivot.x = clamp(pivot.x, -p.x, p.x);
+  pivot.y = clamp(pivot.y, p.yMin, p.yMax);
+  pivot.z = clamp(pivot.z, p.zMin, p.zMax);
+}
+
 const v3 = (x = 0, y = 0, z = 0): Vec3 => ({ x, y, z });
 const set = (o: Vec3, s: Vec3) => {
   o.x = s.x;
@@ -95,6 +124,7 @@ export class CameraRig {
   private modeNow: CameraMode = "overview";
   private endNow: End = 0;
   private time = 0;
+  private held = false;
   /** Follow cam: where the caller wants to look, where the shot started, and the spring-smoothed value used. */
   private focusTarget: number = TABLE.launchD;
   private focusStart: number = TABLE.launchD;
@@ -149,7 +179,7 @@ export class CameraRig {
   setEnd(end: End, animate = false): void {
     if (end === this.endNow) return;
     this.endNow = end;
-    if (!animate) {
+    if (!animate || this.held) {
       this.swap = null;
       this.startBlend();
       return;
@@ -180,6 +210,30 @@ export class CameraRig {
     this.envYaw.vel = 0;
   }
 
+  /** Hand the camera to something else (free roam). Mode and end changes are remembered and blended to on `release`. */
+  hold(): void {
+    this.held = true;
+    this.swap = null;
+    this.blend = null;
+  }
+
+  /** While held: where the other controller put the camera this frame. */
+  track(pos: Vec3, look: Vec3, dt: number): void {
+    this.measure(pos, look, dt);
+    set(this.pos, pos);
+    set(this.look, look);
+  }
+
+  release(): void {
+    if (!this.held) return;
+    this.held = false;
+    this.startBlend();
+  }
+
+  get holding(): boolean {
+    return this.held;
+  }
+
   update(dt: number): void {
     this.time += dt;
     if (this.modeNow === "follow") {
@@ -192,6 +246,11 @@ export class CameraRig {
       this.focusAim = aim;
     }
     this.computeWanted();
+    if (this.held) {
+      this.reveal *= Math.exp(-dt * 4);
+      smoothDamp(this.envYaw, this.yawTarget(), CAMERA.envSmooth, dt);
+      return;
+    }
     const pos = v3();
     const look = v3();
     if (this.swap) {
@@ -243,6 +302,7 @@ export class CameraRig {
 
   /** Ease out the difference between where the camera is and the new mode's view, keeping its current velocity. */
   private startBlend(): void {
+    if (this.held) return;
     this.computeWanted();
     const p0 = v3(this.pos.x - this.wantPos.x, this.pos.y - this.wantPos.y, this.pos.z - this.wantPos.z);
     const l0 = v3(this.look.x - this.wantLook.x, this.look.y - this.wantLook.y, this.look.z - this.wantLook.z);

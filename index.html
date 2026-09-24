@@ -70,6 +70,9 @@
             <button id="btnResume" class="ghost">RESUME</button>
             <button id="btnLeave" class="ghost">LEAVE ROOM</button>
             <button id="btnBoard" class="ghost">SCOREBOARD</button>
+            <button id="btnView" class="ghost view" aria-label="View: look around the hall">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>VIEW
+            </button>
           </div>
           <details class="rules">
             <summary>How to play</summary>
@@ -102,6 +105,16 @@
           <div id="lobbyStatus" class="status"></div>
           <button id="btnLobbyStart" class="go">START MATCH</button>
           <button id="btnLobbyLeave" class="ghost">LEAVE</button>
+        </div>
+      </section>
+
+      <section id="roam" class="roam" aria-label="Free look">
+        <button id="btnRoamExit" class="roamexit" aria-label="Back to menu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg><span>MENU</span>
+        </button>
+        <div class="roamhint">
+          <span class="touch">Drag to look around · pinch to zoom · two fingers to pan</span>
+          <span class="mouse">Drag to look around · scroll to zoom · right-drag to pan · Esc for menu</span>
         </div>
       </section>
 

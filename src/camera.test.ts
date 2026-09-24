@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TABLE } from "./rules.ts";
 import { World, slideDistance, stoppingDistance, speedForDistance, type Body } from "./physics.ts";
-import { CAMERA, CENTRE, CameraRig, type CameraMode } from "./rig.ts";
+import { CAMERA, CENTRE, CameraRig, ROAM, clampRoam, type CameraMode } from "./rig.ts";
 import { WALL_SIGN } from "./scene.ts";
 import { easeOffset, followLead, smoothDamp, smoothMin, smootherstep, type Spring } from "./smooth.ts";
 import { SWAP, swapPose, type Vec3 } from "./swap.ts";
@@ -441,7 +441,7 @@ test("blend knobs: look turns first into follow, trails a little on the way back
   assert.ok(CAMERA.engage > 0 && CAMERA.followSmooth > 0);
 });
 
-/* ---------- ends and reflections ---------- */
+/* ---------- ends, reflections, roam ---------- */
 
 test("the back wall reads exactly: Everyday I'm Shuffling", () => {
   assert.equal(WALL_SIGN.join(" "), "Everyday I'm Shuffling");
@@ -522,4 +522,35 @@ test("a shot mid fly-around takes over smoothly", () => {
   rig.update(1 / 60);
   assert.ok(!rig.swapping);
   assert.ok(dist(rig.vel, before) < 0.6, `velocity carried over (${dist(rig.vel, before).toFixed(2)} m/s change)`);
+});
+
+test("free roam: stays inside the hall, and hands back without a jump", () => {
+  const pos = { x: 20, y: -5, z: 30 };
+  const pivot = { x: -20, y: 9, z: -40 };
+  clampRoam(pos, pivot);
+  assert.deepEqual(pos, { x: ROAM.camera.x, y: ROAM.camera.yMin, z: ROAM.camera.zMax });
+  assert.deepEqual(pivot, { x: -ROAM.pivot.x, y: ROAM.pivot.yMax, z: ROAM.pivot.zMin });
+  assert.ok(ROAM.camera.x < 8.6 && ROAM.camera.zMax < 2.2 && ROAM.camera.zMin > -L - 2.2 && ROAM.camera.yMin > -0.92, "inside the walls and above the floor");
+
+  const rig = new CameraRig();
+  rig.setMode("overview");
+  rig.snap();
+  rig.hold();
+  // The player drags the view round to the side of the hall, still moving when they let go.
+  const p = { ...rig.pos };
+  const look = { x: 0, y: 0, z: CENTRE.z };
+  for (let n = 0; n < 60; n++) {
+    p.x += 0.05;
+    rig.update(1 / 60);
+    rig.track(p, look, 1 / 60);
+  }
+  // A mode change while roaming (the menu going back to overview) is picked up on release.
+  rig.setMode("aim");
+  assert.ok(dist(rig.pos, p) < 1e-9, "the rig leaves a held camera alone");
+  rig.release();
+  const was = { ...rig.pos };
+  rig.update(1 / 60);
+  assert.ok(dist(rig.pos, was) < 0.06, `first frame back moves ${dist(rig.pos, was).toFixed(3)} m`);
+  for (let t = 0; t < 3; t += 1 / 60) rig.update(1 / 60);
+  assert.ok(!rig.blending && Math.abs(rig.pos.z - 1.55) < 1e-9, "lands on the aim view");
 });

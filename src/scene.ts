@@ -1,8 +1,9 @@
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { TABLE, toTable, type End, type Team } from "./rules.ts";
-import { CENTRE, CameraRig, toWorld, type CameraMode } from "./rig.ts";
+import { CENTRE, CameraRig, ROAM, clampRoam, toWorld, type CameraMode } from "./rig.ts";
 import { SWAP } from "./swap.ts";
 import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
@@ -173,6 +174,8 @@ export class Stage {
   private endNow: End = 0;
   /** Every scripted camera move; see `CAMERA` in rig.ts for the feel knobs. */
   private rig = new CameraRig();
+  /** Free-roam controls while the menu's View is open. */
+  private roam: OrbitControls | null = null;
   private time = 0;
   private neon: THREE.MeshBasicMaterial[] = [];
   private tmp = new THREE.Vector3();
@@ -689,6 +692,48 @@ export class Stage {
     this.rig.snap();
   }
 
+  /* ---------- free roam ---------- */
+
+  get roaming(): boolean {
+    return this.roam !== null;
+  }
+
+  /**
+   * Hand the camera to the player: one finger (or mouse drag) orbits, pinch or
+   * wheel zooms, two fingers (or right drag) pan. Starts from the current view.
+   */
+  startRoam(): void {
+    if (this.roam) return;
+    const c = new OrbitControls(this.camera, this.renderer.domElement);
+    c.enableDamping = true;
+    c.dampingFactor = 0.09;
+    c.rotateSpeed = 0.7;
+    c.zoomSpeed = 0.8;
+    c.panSpeed = 0.8;
+    c.minDistance = ROAM.minDistance;
+    c.maxDistance = ROAM.maxDistance;
+    c.maxPolarAngle = ROAM.maxPolar;
+    c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    const { pos, look } = this.rig;
+    this.camera.position.set(pos.x, pos.y, pos.z);
+    // Orbit round the middle of the view, a few metres out, so the first drag swings round the hall rather than spinning in place.
+    const dir = new THREE.Vector3(look.x - pos.x, look.y - pos.y, look.z - pos.z);
+    const reach = Math.min(Math.max(dir.length(), 3), 5);
+    c.target.copy(this.camera.position).addScaledVector(dir.normalize(), reach);
+    clampRoam(this.camera.position, c.target);
+    c.update();
+    this.rig.hold();
+    this.roam = c;
+  }
+
+  /** Give the camera back; it blends from wherever the player left it to the current mode's view. */
+  stopRoam(): void {
+    if (!this.roam) return;
+    this.roam.dispose();
+    this.roam = null;
+    this.rig.release();
+  }
+
   resize(): void {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -719,8 +764,15 @@ export class Stage {
     this.time += dt;
     const rig = this.rig;
     rig.update(dt);
-    this.camera.position.set(rig.pos.x, rig.pos.y, rig.pos.z);
-    this.camera.lookAt(rig.look.x, rig.look.y, rig.look.z);
+    if (this.roam) {
+      this.roam.update(dt);
+      clampRoam(this.camera.position, this.roam.target);
+      this.camera.lookAt(this.roam.target);
+      rig.track(this.camera.position, this.roam.target, dt);
+    } else {
+      this.camera.position.set(rig.pos.x, rig.pos.y, rig.pos.z);
+      this.camera.lookAt(rig.look.x, rig.look.y, rig.look.z);
+    }
     // RoomEnvironment is lopsided (its biggest softbox is on +z), so the reflections turn with the end;
     // otherwise end 1 looks straight into that softbox's glare on the clear coat.
     this.scene.environmentRotation.y = rig.envYaw.value;
@@ -741,7 +793,7 @@ export class Stage {
     r.setViewport(0, 0, w, h);
     r.render(this.scene, this.camera);
 
-    if (this.inset && rig.mode !== "head" && !rig.swapping) {
+    if (this.inset && rig.mode !== "head" && !rig.swapping && !this.roam) {
       const { x, y, w: iw, h: ih } = this.inset;
       const halfH = 1.6;
       const halfW = (halfH * iw) / ih;

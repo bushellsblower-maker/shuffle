@@ -826,6 +826,8 @@ function settleTo(r: RoomSnapshot): void {
 function applySnapshot(r: RoomSnapshot): void {
   const m = r.match;
   if (!m) return;
+  // The match started while this player was looking round the hall; the room doesn't wait.
+  stopRoam(false);
   const fromRoundEnd = phase === "roundEnd" || phase === "matchEnd";
   hideLobby();
   hideCard();
@@ -884,7 +886,7 @@ const lobby = {
 };
 
 function showLobby(): void {
-  if (!net || hud.menu.classList.contains("show")) return;
+  if (!net || hud.menu.classList.contains("show") || stage.roaming) return;
   const code = room?.code ?? net.ticket.code;
   lobby.code.textContent = code;
   lobby.link.textContent = roomLink(code).replace(/^https?:\/\//, "");
@@ -999,6 +1001,7 @@ function syncMenu(): void {
   $("joinBox").style.display = online && !net ? "" : "none";
   $("btnResume").style.display = matchLive || net ? "" : "none";
   $("btnLeave").style.display = net ? "" : "none";
+  $("btnView").style.display = canRoam() ? "" : "none";
 }
 
 function readMenu(): void {
@@ -1008,6 +1011,7 @@ function readMenu(): void {
 
 let resumePhase: Phase = "aim";
 function openMenu(): void {
+  stopRoam(false);
   // Online play keeps running under the menu; the room doesn't pause for one player's menu.
   if (!isOnline() && phase !== "menu") {
     resumePhase = phase;
@@ -1145,6 +1149,40 @@ $("btnMenu").onclick = () => {
   openMenu();
 };
 
+/* ---------------- Free roam ---------------- */
+
+const roamEl = $("roam");
+/** Menu only, before a match: roaming mid-match would take the camera away from play. */
+const canRoam = () => !matchLive && !room?.match;
+
+function startRoam(): void {
+  if (stage.roaming || !canRoam()) return;
+  sound.unlock();
+  sound.tick();
+  readMenu();
+  closeMenu();
+  document.body.classList.add("roaming");
+  roamEl.classList.add("show");
+  stage.startRoam();
+}
+
+/** Leave free roam; `toMenu` reopens the menu it came from. */
+function stopRoam(toMenu: boolean): void {
+  if (!stage.roaming) return;
+  stage.stopRoam();
+  document.body.classList.remove("roaming");
+  roamEl.classList.remove("show");
+  if (toMenu) openMenu();
+}
+
+$("btnView").onclick = startRoam;
+$("btnRoamExit").onclick = () => {
+  sound.tick();
+  stopRoam(true);
+};
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && stage.roaming) stopRoam(true);
+});
 const soundBtn = $("btnSound");
 const syncSound = () => soundBtn.classList.toggle("muted", sound.muted);
 soundBtn.onclick = () => {
