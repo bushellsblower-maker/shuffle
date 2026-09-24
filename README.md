@@ -86,7 +86,7 @@ The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`. 
 | `SURFACE.beadCount` | `src/surface.ts` | `6000` | 3D sand beads on the active table, all in one instanced draw (20 triangles each). Ploughing re-uploads only the run of beads it moved. |
 | `SURFACE.beadRadius` | `src/surface.ts` | `[0.0018, 0.0042]` m | Smallest and largest bead radius. Sizes skew small (mean about 2.4 mm). |
 | `SURFACE.beadColor` / `SURFACE.beadGlow` | `src/surface.ts` | `#fbf3e0` / `#3a3222` | Albedo and emissive of the 3D sand beads. |
-| `SURFACE.ink` / `SURFACE.red` | `src/surface.ts` | `#16161a` / `#8a150d` | Zone lines and numbers, and the foul line. `src/surface.test.ts` fails if the wood gets dark enough to hurt their contrast, if the sand loses its edge, gets coarser, or thins out, or if the bead count outgrows a phone-friendly triangle budget. |
+| `SURFACE.ink` / `SURFACE.red` | `src/surface.ts` | `#16161a` / `#80130c` | Zone lines and numbers, and the foul line. `src/surface.test.ts` fails if the wood gets dark enough to hurt their contrast, if the sand loses its edge, gets coarser, or thins out, or if the bead count outgrows a phone-friendly triangle budget. |
 | `ROAM` | `src/rig.ts` | see file | Free-roam limits: the box the camera and its pivot stay in, zoom range, and how low it can orbit. |
 
 With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 4 cm in length of where it would on perfectly even wax (one standard deviation). `src/rules.test.ts` fails if that spread grows past 4 cm sideways or 7 cm in length. Set `drift` and `grip` to 0 for a perfectly predictable table.
