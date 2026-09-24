@@ -24,7 +24,7 @@ Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 1. **Host:** Menu → **Online**, enter your name, pick 15 or 21, tap **HOST ONLINE GAME**. You get a 5-character room code (for example `K7QMX`) and a link, `https://shuffle.cybush.uk/join/K7QMX`. Tap the code to copy it, or use **SHARE LINK** / **COPY LINK**.
 2. **Guest:** open the link, or Menu → **Online** and type the code under *or join a friend's room*. Enter your name and tap **JOIN**. `?room=K7QMX` works too.
 3. The waiting room shows both seats with a live/offline dot. The host taps **START MATCH** once the guest is connected.
-4. The host is orange and throws first. Each phone only controls its own weights. The pill under the scorebar says whose turn it is, and you see the opponent's aim and power as they pull back.
+4. The host is red and throws first. Each phone only controls its own weights. The pill under the scorebar says whose turn it is, and you see the opponent's aim and power as they pull back.
 5. After each round both players tap **NEXT ROUND**. At the end, **REMATCH** needs both players too, and the loser throws first.
 
 **Disconnects.** The browser reconnects on its own, with backoff, and again as soon as the tab is visible. While either player is offline the match is paused: the room rejects shots and the pill shows *OFFLINE · PAUSED*. A reload or reopened tab rejoins the same seat; the seat token is kept in `localStorage`. If the room has gone, you are returned to the menu with a message.
@@ -86,7 +86,8 @@ The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`. 
 | `SURFACE.beadCount` | `src/surface.ts` | `6000` | 3D sand beads on the active table, all in one instanced draw (20 triangles each). Ploughing re-uploads only the run of beads it moved. |
 | `SURFACE.beadRadius` | `src/surface.ts` | `[0.0018, 0.0042]` m | Smallest and largest bead radius. Sizes skew small (mean about 2.4 mm). |
 | `SURFACE.beadColor` / `SURFACE.beadGlow` | `src/surface.ts` | `#fbf3e0` / `#3a3222` | Albedo and emissive of the 3D sand beads. |
-| `SURFACE.ink` / `SURFACE.red` | `src/surface.ts` | `#16161a` / `#8a150d` | Zone lines and numbers, and the foul line. `src/surface.test.ts` fails if the wood gets dark enough to hurt their contrast, if the sand loses its edge, gets coarser, or thins out, or if the bead count outgrows a phone-friendly triangle budget. |
+| `SURFACE.ink` / `SURFACE.red` | `src/surface.ts` | `#16161a` / `#80130c` | Zone lines and numbers, and the foul line. `src/surface.test.ts` fails if the wood gets dark enough to hurt their contrast, if the sand loses its edge, gets coarser, or thins out, or if the bead count outgrows a phone-friendly triangle budget. |
+| `TEAM_COLORS` | `src/teams.ts` | `#ff4550` / `#27d3ff` | Red and cyan: weights, aim guide, table strips and every team-coloured bit of the HUD. `src/style.css` repeats them as `--a` / `--b`; `src/teams.test.ts` fails if the two drift apart, if red stops reading on the dark HUD, or if it gets too close to the foul line. |
 | `ROAM` | `src/rig.ts` | see file | Free-roam limits: the box the camera and its pivot stay in, zoom range, and how low it can orbit. |
 
 With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 4 cm in length of where it would on perfectly even wax (one standard deviation). `src/rules.test.ts` fails if that spread grows past 4 cm sideways or 7 cm in length. Set `drift` and `grip` to 0 for a perfectly predictable table.

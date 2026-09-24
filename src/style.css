@@ -1,6 +1,7 @@
 :root {
-  --a: #ff7a1a;
+  --a: #ff4550;
   --b: #27d3ff;
+  --brand: #ff7a1a;
   --amber: #ffc21a;
   --ink: #0a0b0e;
   --panel: rgba(14, 16, 20, 0.82);
@@ -501,7 +502,7 @@ body {
   letter-spacing: 0.02em;
   text-align: center;
   font-style: italic;
-  background: linear-gradient(180deg, #fff 0%, #ffd6b0 45%, var(--a) 100%);
+  background: linear-gradient(180deg, #fff 0%, #ffd6b0 45%, var(--brand) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

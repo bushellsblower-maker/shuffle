@@ -29,7 +29,7 @@ export const SURFACE = {
   beadColor: "#fbf3e0",
   beadGlow: "#3a3222",
   ink: "#16161a",
-  red: "#8a150d",
+  red: "#80130c",
 } as const;
 
 /** Triangles in one sand bead (a detail-0 icosahedron). */
