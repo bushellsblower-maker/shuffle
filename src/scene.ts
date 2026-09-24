@@ -4,6 +4,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { TABLE, toTable, type End, type Team } from "./rules.ts";
 import { CENTRE, CameraRig, ROAM, clampRoam, toWorld, type CameraMode } from "./rig.ts";
+import { SURFACE } from "./surface.ts";
 import { SWAP } from "./swap.ts";
 import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
@@ -276,7 +277,7 @@ export class Stage {
 
   private buildSand(): void {
     const geo = new THREE.IcosahedronGeometry(1, 0);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xf6ecd4, roughness: 0.45, metalness: 0, emissive: 0x2a2418 });
+    const mat = new THREE.MeshStandardMaterial({ color: SURFACE.beadColor, roughness: 0.45, metalness: 0, emissive: SURFACE.beadGlow });
     this.sand = new THREE.InstancedMesh(geo, mat, SAND_GRAINS);
     this.sand.frustumCulled = false;
     this.sand.castShadow = false;
