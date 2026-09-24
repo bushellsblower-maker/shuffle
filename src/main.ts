@@ -1,6 +1,7 @@
 import "./style.css";
 import { MAX_ANGLE, planCpuShot, powerOf, speedOf, type Shot } from "./ai.ts";
 import { Sound } from "./audio.ts";
+import { dragIntent, inReach, type DragIntent } from "./gesture.ts";
 import { gameBody } from "./history.ts";
 import { startLoading } from "./loading.ts";
 import { randomSeed, roundLog, upgradeMatch, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
@@ -10,6 +11,7 @@ import type { AimInput, RoomSnapshot, RoomTicket, ServerMsg } from "./protocol.t
 import { codeFromLocation, isRoomCode, normalizeCode, randomToken } from "./room-code.ts";
 import {
   TABLE,
+  clampStart,
   endForRound,
   isLive,
   matchWinner,
@@ -57,11 +59,15 @@ interface Weight {
   trail?: { x: number; d: number };
 }
 
+interface Spot {
+  x: number;
+  d: number;
+}
+
 /** `settle`: an online shot has finished animating and is waiting for the room's result. */
 type Phase = "menu" | "aim" | "rolling" | "resolving" | "settle" | "roundEnd" | "matchEnd";
 
 const R = TABLE.puckRadius;
-const LANE = TABLE.width / 2 - R - 0.02;
 const CPU: Team = 1;
 const DEFAULT_NAMES: [string, string] = [...TEAM_NAMES];
 
@@ -110,9 +116,15 @@ let current: Weight | null = null;
 let resolveTimer = 0;
 let lastResult: RoundResult | null = null;
 const lastPower: [number | null, number | null] = [null, null];
-const lastX: [number, number] = [0, 0];
+/** Where each side last threw from; its next weight is set down there. */
+const lastSpot: [Spot, Spot] = [
+  { x: 0, d: TABLE.launchD },
+  { x: 0, d: TABLE.launchD },
+];
+/** Where the weight being aimed is set down (before any pull-back). */
+let spot: Spot = { x: 0, d: TABLE.launchD };
 let labels: { el: HTMLElement; w: Weight }[] = [];
-let cpu: { shot: Shot; t: number; fromX: number } | null = null;
+let cpu: { shot: Shot; t: number; from: Spot } | null = null;
 let endToken = 0;
 /** Follow-camera target for the current shot; only moves forward so collisions can't yank it back. */
 let followD: number = TABLE.launchD;
@@ -129,7 +141,7 @@ let pendingShot: { seq: number; shot: ShotInput; end: End } | null = null;
 let awaiting: RoomSnapshot | null = null;
 let remoteShots: ShotMsg[] = [];
 let rejectPending = false;
-let remoteAim: { target: AimInput; x: number; angle: number; power: number } | null = null;
+let remoteAim: { target: AimInput & Spot; x: number; d: number; angle: number; power: number } | null = null;
 let settleWait = 0;
 
 const isOnline = () => matchMode === "online" && net !== null;
@@ -205,11 +217,11 @@ function setPower(p: number | null): void {
 function turnHint(): string {
   if (!current) return "";
   if (isCpuTurn()) return "CPU is lining up…";
-  if (matchMode !== "online") return "Pull back & release · or flick forward";
+  if (matchMode !== "online") return "Pull back or flick · slide sideways to move it";
   if (current.team !== seat) return `${teamName(current.team)} is lining up…`;
   if (!net?.isOpen) return "Reconnecting…";
   if (!opponentHere()) return `Paused until ${teamName(other(seat!))} is back`;
-  return "Your turn · pull back & release";
+  return "Your turn · pull back, or slide it sideways";
 }
 
 function updateNet(): void {
@@ -323,7 +335,7 @@ function nextTurn(): void {
   if (!current) return endRound();
   current.status = "aim";
   weights.filter((w) => w.status === "rack").forEach(rackPosition);
-  placeAim(lastX[team]);
+  placeAim(lastSpot[team].x, lastSpot[team].d);
   phase = "aim";
   remoteAim = null;
   stage.setCamera("aim");
@@ -339,39 +351,41 @@ function nextTurn(): void {
   setPower(null);
   if (isCpuTurn()) {
     const resting = weights.filter((w) => w.status === "play" && w.body).map((w) => ({ team: w.team, x: w.body!.x, d: w.body!.d }));
-    cpu = { shot: planCpuShot(resting, CPU), t: -0.6, fromX: lastX[team] };
+    cpu = { shot: planCpuShot(resting, CPU), t: -0.6, from: { ...lastSpot[team] } };
   } else cpu = null;
   renderHud();
 }
 
-function placeAim(x: number, pull = 0): void {
+/** Set the aiming weight down at (`x`, `d`), drawn `pull` metres back toward the shooter (never off the near edge). */
+function placeAim(x: number, d: number, pull = 0, lifted = false): void {
   if (!current) return;
-  current.view.group.position.set(x, 0, -(TABLE.launchD - pull));
+  spot = { x, d };
+  current.view.group.position.set(x, lifted ? 0.012 : 0, -(d - Math.min(pull, d - R - 0.01)));
   current.view.group.rotation.set(0, 0, 0);
 }
 
-function launch(x: number, angle: number, speed: number, remote = false): void {
+function launch(x: number, d: number, angle: number, speed: number, remote = false): void {
   if (!current || phase !== "aim") return;
   const w = current;
-  lastX[w.team] = x;
+  lastSpot[w.team] = { x, d };
   lastPower[w.team] = powerOf(speed);
   w.id = shotIndex;
-  w.body = { x, d: TABLE.launchD, vx: speed * Math.sin(angle), vd: speed * Math.cos(angle), active: true };
-  w.trail = { x, d: TABLE.launchD };
+  w.body = { x, d, vx: speed * Math.sin(angle), vd: speed * Math.cos(angle), active: true };
+  w.trail = { x, d };
   world.bodies.push(w.body);
   world.sand = sandSeed(matchSeed, round, shotIndex);
   w.status = "play";
   phase = "rolling";
   resolveTimer = 0;
   stage.hideAim();
-  followD = TABLE.launchD;
+  followD = d;
   stage.setCamera("follow", followD);
   hud.hint.classList.remove("show");
   setPower(null);
   sound.launch(powerOf(speed));
   if (matchMode === "online") {
     if (!remote) {
-      pendingShot = { seq: localSeq, shot: { x, angle, speed }, end };
+      pendingShot = { seq: localSeq, shot: { x, angle, speed, d }, end };
       net?.send({ t: "shot", seq: localSeq, shot: pendingShot.shot, end });
     }
     localSeq++;
@@ -713,11 +727,11 @@ function onServer(msg: ServerMsg): void {
       return;
     case "aim":
       if (!isRemoteTurn() || phase !== "aim" || !current) return;
-      if (!remoteAim) {
-        const x = current.view.group.position.x;
-        remoteAim = { target: { x, angle: 0, power: 0 }, x, angle: 0, power: 0 };
-      }
-      remoteAim.target = msg.aim ?? { ...remoteAim.target, power: 0, angle: 0 };
+      if (!remoteAim) remoteAim = { target: { ...spot, angle: 0, power: 0 }, ...spot, angle: 0, power: 0 };
+      if (msg.aim) {
+        const at = clampStart(msg.aim.x, msg.aim.d ?? TABLE.launchD);
+        remoteAim.target = { ...msg.aim, ...at };
+      } else remoteAim.target = { ...remoteAim.target, power: 0, angle: 0 };
       return;
     case "error":
       if (pendingShot) rejectPending = true;
@@ -777,8 +791,9 @@ function playRemote(msg: ShotMsg): boolean {
   if (msg.seq !== localSeq || m.round !== round || m.shotIndex !== shotIndex + 1) return false;
   awaiting = msg.room;
   remoteAim = null;
-  placeAim(msg.shot.x);
-  launch(msg.shot.x, msg.shot.angle, msg.shot.speed, true);
+  const d = msg.shot.d ?? TABLE.launchD;
+  placeAim(msg.shot.x, d);
+  launch(msg.shot.x, d, msg.shot.angle, msg.shot.speed, true);
   return true;
 }
 
@@ -1204,17 +1219,22 @@ interface Drag {
   id: number;
   sx: number;
   sy: number;
+  /** Where the weight is set down for this gesture. */
   x: number;
+  d: number;
   samples: { x: number; y: number; t: number }[];
+  intent: DragIntent;
   mode: "idle" | "pull" | "flick";
   power: number;
   angle: number;
+  /** The weight's offset from the table point first touched, if this touch can pick it up. */
+  grab: { ox: number; od: number } | null;
 }
 let drag: Drag | null = null;
 const pullRange = () => Math.min(440, Math.max(220, window.innerHeight * 0.48));
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-const shareAim = (x: number, angle = 0, power = 0) => {
-  if (isOnline()) net!.sendAim({ x, angle, power });
+const shareAim = (x: number, d: number, angle = 0, power = 0) => {
+  if (isOnline()) net!.sendAim({ x, d, angle, power });
 };
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -1225,12 +1245,20 @@ canvas.addEventListener("pointerdown", (e) => {
   } catch {
     /* pointer already released */
   }
-  let x = current.view.group.position.x;
   const hit = stage.pickTable(e.clientX, e.clientY);
-  if (hit && hit.d < 2.2 && hit.d > -0.6 && Math.abs(hit.x) < TABLE.width / 2 + 0.15) x = clamp(hit.x, -LANE, LANE);
-  placeAim(x);
-  shareAim(x);
-  drag = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x, samples: [{ x: e.clientX, y: e.clientY, t: e.timeStamp }], mode: "idle", power: 0, angle: 0 };
+  const grab = hit && inReach(hit) ? { ox: spot.x - hit.x, od: spot.d - hit.d } : null;
+  drag = {
+    id: e.pointerId,
+    sx: e.clientX,
+    sy: e.clientY,
+    ...spot,
+    samples: [{ x: e.clientX, y: e.clientY, t: e.timeStamp }],
+    intent: "undecided",
+    mode: "idle",
+    power: 0,
+    angle: 0,
+    grab,
+  };
   hud.hint.classList.remove("show");
 });
 
@@ -1240,20 +1268,30 @@ canvas.addEventListener("pointermove", (e) => {
   if (drag.samples.length > 12) drag.samples.shift();
   const dx = e.clientX - drag.sx;
   const dy = e.clientY - drag.sy;
+  const was = drag.intent;
+  drag.intent = dragIntent(was, dx, dy, drag.grab !== null);
+  if (drag.intent === "place") {
+    if (was !== "place" && navigator.vibrate) navigator.vibrate(8);
+    const hit = stage.pickTable(e.clientX, e.clientY);
+    if (hit && drag.grab) Object.assign(drag, clampStart(hit.x + drag.grab.ox, hit.d + drag.grab.od));
+    placeAim(drag.x, drag.d, 0, true);
+    shareAim(drag.x, drag.d);
+    return;
+  }
   if (dy > 10) {
     drag.mode = "pull";
     drag.power = clamp((dy - 10) / pullRange(), 0, 1);
     drag.angle = clamp(Math.atan2(-dx, dy) * 0.45, -MAX_ANGLE, MAX_ANGLE);
-    placeAim(drag.x, drag.power * 0.2);
-    stage.showAim(drag.x, TABLE.launchD, drag.angle, drag.power, current.team);
+    placeAim(drag.x, drag.d, drag.power * 0.2);
+    stage.showAim(drag.x, drag.d, drag.angle, drag.power, current.team);
     setPower(drag.power);
-    shareAim(drag.x, drag.angle, drag.power);
+    shareAim(drag.x, drag.d, drag.angle, drag.power);
   } else {
     drag.mode = dy < -10 ? "flick" : "idle";
-    placeAim(drag.x);
+    placeAim(drag.x, drag.d);
     stage.hideAim();
     setPower(null);
-    shareAim(drag.x);
+    shareAim(drag.x, drag.d);
   }
 });
 
@@ -1263,7 +1301,7 @@ function endDrag(e: PointerEvent, cancelled: boolean): void {
   drag = null;
   if (!current || phase !== "aim") return;
   if (!cancelled && d.mode === "pull" && d.power > 0.02) {
-    launch(d.x, d.angle, speedOf(d.power));
+    launch(d.x, d.d, d.angle, speedOf(d.power));
     return;
   }
   if (!cancelled && d.mode === "flick") {
@@ -1280,14 +1318,14 @@ function endDrag(e: PointerEvent, cancelled: boolean): void {
     const vy = (e.clientY - a.y) / dt;
     if (-vy > 0.25) {
       const power = clamp(-vy / 3.4, 0.05, 1);
-      launch(d.x, clamp(Math.atan2(vx, -vy) * 0.45, -MAX_ANGLE, MAX_ANGLE), speedOf(power));
+      launch(d.x, d.d, clamp(Math.atan2(vx, -vy) * 0.45, -MAX_ANGLE, MAX_ANGLE), speedOf(power));
       return;
     }
   }
-  placeAim(d.x);
+  placeAim(d.x, d.d);
   stage.hideAim();
   setPower(null);
-  shareAim(d.x);
+  shareAim(d.x, d.d);
   hud.hint.textContent = turnHint();
   hud.hint.classList.add("show");
 }
@@ -1305,15 +1343,16 @@ function stepCpu(dt: number): void {
   if (cpu.t < 0) return;
   if (cpu.t < 0.5) {
     const k = cpu.t / 0.5;
-    placeAim(cpu.fromX + (shot.x - cpu.fromX) * k * k * (3 - 2 * k));
+    const s = k * k * (3 - 2 * k);
+    placeAim(cpu.from.x + (shot.x - cpu.from.x) * s, cpu.from.d + (TABLE.launchD - cpu.from.d) * s);
   } else if (cpu.t < 1.4) {
     const k = Math.min(1, (cpu.t - 0.5) / 0.7);
-    placeAim(shot.x, power * k * 0.2);
+    placeAim(shot.x, TABLE.launchD, power * k * 0.2);
     stage.showAim(shot.x, TABLE.launchD, shot.angle, power * k, current.team);
     setPower(power * k);
   } else {
     cpu = null;
-    launch(shot.x, shot.angle, shot.speed);
+    launch(shot.x, TABLE.launchD, shot.angle, shot.speed);
   }
 }
 
@@ -1322,11 +1361,12 @@ function stepRemoteAim(dt: number): void {
   const a = remoteAim;
   const k = 1 - Math.exp(-dt * 14);
   a.x += (a.target.x - a.x) * k;
+  a.d += (a.target.d - a.d) * k;
   a.angle += (a.target.angle - a.angle) * k;
   a.power += (a.target.power - a.power) * k;
-  placeAim(a.x, a.power * 0.2);
+  placeAim(a.x, a.d, a.power * 0.2);
   if (a.power > 0.02) {
-    stage.showAim(a.x, TABLE.launchD, a.angle, a.power, current.team);
+    stage.showAim(a.x, a.d, a.angle, a.power, current.team);
     setPower(a.power);
   } else {
     stage.hideAim();

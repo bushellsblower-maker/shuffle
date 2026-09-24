@@ -21,7 +21,7 @@ import {
 import { MAX_SPEED, World, sandSeed, speedForDistance } from "./physics.ts";
 import { cleanPlayerName, parseClientMsg } from "./protocol.ts";
 import { CODE_ALPHABET, CODE_LENGTH, codeFromLocation, isRoomCode, normalizeCode, randomCode } from "./room-code.ts";
-import { TABLE, isLive, scoreRound, type Team } from "./rules.ts";
+import { START, TABLE, isLive, scoreRound, type Team } from "./rules.ts";
 
 function seeded(seed: number): () => number {
   let s = seed >>> 0;
@@ -73,6 +73,14 @@ test("client messages are parsed defensively", () => {
   assert.equal(parseClientMsg(JSON.stringify({ t: "shot", seq: 2, shot, end: "0" })), null);
   assert.deepEqual(parseClientMsg('{"t":"aim","aim":null}'), { t: "aim", aim: null });
   assert.equal(parseClientMsg('{"t":"aim","aim":{"x":"1","angle":0,"power":0}}'), null);
+  assert.deepEqual(parseClientMsg('{"t":"aim","aim":{"x":0.1,"angle":0,"power":0}}'), { t: "aim", aim: { x: 0.1, angle: 0, power: 0 } });
+  assert.deepEqual(parseClientMsg('{"t":"aim","aim":{"x":0.1,"d":0.3,"angle":0,"power":0.5}}'), {
+    t: "aim",
+    aim: { x: 0.1, d: 0.3, angle: 0, power: 0.5 },
+  });
+  assert.equal(parseClientMsg('{"t":"aim","aim":{"x":0.1,"d":"0.3","angle":0,"power":0}}'), null);
+  const moved = { x: 0.2, angle: 0, speed: 3, d: 0.3 };
+  assert.deepEqual(parseClientMsg(JSON.stringify({ t: "shot", seq: 1, shot: moved })), { t: "shot", seq: 1, shot: moved });
   assert.equal(cleanPlayerName("  <b>ann</b>\u0007 ", "X"), "BANN/B");
   assert.equal(cleanPlayerName("", "GUEST"), "GUEST");
   assert.equal(cleanPlayerName("a".repeat(30), "X").length, 12);
@@ -90,14 +98,40 @@ test("shots outside what a gesture can produce are rejected", () => {
   assert.equal(parseShot("shot"), null);
 });
 
+test("a moved launch spot must be inside the start box; without one the shot keeps its old shape", () => {
+  assert.deepEqual(parseShot({ x: 0, angle: 0, speed: 3 }), { x: 0, angle: 0, speed: 3 });
+  assert.ok(!("d" in parseShot({ x: 0, angle: 0, speed: 3 })!), "old clients' shots are stored unchanged");
+  assert.deepEqual(parseShot({ x: 0, angle: 0, speed: 3, d: START.minD }), { x: 0, angle: 0, speed: 3, d: START.minD });
+  assert.deepEqual(parseShot({ x: 0, angle: 0, speed: 3, d: START.maxD }), { x: 0, angle: 0, speed: 3, d: START.maxD });
+  assert.equal(parseShot({ x: 0, angle: 0, speed: 3, d: START.maxD + 0.01 }), null, "past the start line");
+  assert.equal(parseShot({ x: 0, angle: 0, speed: 3, d: START.minD - 0.01 }), null, "off the near edge");
+  assert.equal(parseShot({ x: 0, angle: 0, speed: 3, d: 2 }), null);
+  assert.equal(parseShot({ x: 0, angle: 0, speed: 3, d: Number.NaN }), null);
+  assert.equal(parseShot({ x: 0, angle: 0, speed: 3, d: "0.3" }), null);
+  assert.equal(parseShot({ x: 0, angle: 0, speed: 3, d: null }), null);
+});
+
+test("a shot is launched from its set-down spot, and the default spot matches a shot without one", () => {
+  const speed = speedForDistance(6.5 - TABLE.launchD);
+  assert.equal(launchBody({ x: 0.1, angle: 0, speed }).d, TABLE.launchD);
+  assert.equal(launchBody({ x: 0.1, angle: 0, speed, d: 0.3 }).d, 0.3);
+  const sand = sandSeed(3, 1, 0);
+  assert.deepEqual(simulateShot([], { x: 0.1, angle: 0, speed, d: TABLE.launchD }, 0, 0, sand), simulateShot([], { x: 0.1, angle: 0, speed }, 0, 0, sand));
+  // On even wax the same throw from further back stops the same distance further back.
+  const from = (d: number) => simulateShot([], { x: 0, angle: 0, speed, d }, 0, 0)[0].d;
+  assert.ok(Math.abs(from(TABLE.launchD) - from(START.minD) - (TABLE.launchD - START.minD)) < 1e-3);
+});
+
 /* ---------- match engine ---------- */
 
 function randomShot(rand: () => number): ShotInput {
-  return {
+  const shot: ShotInput = {
     x: (rand() * 2 - 1) * LANE,
     angle: (rand() * 2 - 1) * MAX_ANGLE * 0.6,
     speed: speedOf(0.55 + rand() * 0.25),
   };
+  if (rand() < 0.5) shot.d = START.minD + rand() * (START.maxD - START.minD);
+  return shot;
 }
 
 /** What a browser does: step the same world (same sand) with whatever frame times it gets. */

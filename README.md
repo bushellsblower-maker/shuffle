@@ -9,7 +9,7 @@ Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 ## Play
 
 - **Pull back** anywhere on the screen and release to slide the weight. The further you pull, the harder the shot. Drag sideways while pulling to angle it.
-- **Pick your lane** by touching down low on the table, near the weight. The weight jumps to that spot before you pull.
+- **Move the weight** (optional) by touching the near end of the table and sliding sideways. The weight lifts and follows your finger, left and right across the lane and a little forward or back, and it is set down where you let go. Then pull back or flick as usual. It can't go past the thin start line in front of it or off the back of the table. Each side's next weight starts where that side last threw from. A drag that starts by going down (pull) or up (flick) is always a throw, so it never picks the weight up.
 - **Flick** forward instead of pulling back if you prefer. Flick speed sets the power.
 - The **power meter** on the left shows this shot. The white tick marks your side's last shot.
 - The **HEAD** inset on the right is a top-down view of the scoring end, so you can see the far zones while you aim.
@@ -35,7 +35,7 @@ Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 
 The room is **authoritative**. There is one Durable Object per room (`Room`, named by the code), and it holds the match state: weights on the table, scores, turn, and round.
 
-- A client sends intents only: `shot {seq, shot: {x, angle, speed}, end}`, `aim` (a cosmetic preview), `ready`, `start`, `leave`.
+- A client sends intents only: `shot {seq, shot: {x, angle, speed, d?}, end}`, `aim {x, angle, power, d?}` (a cosmetic preview), `ready`, `start`, `leave`. `d` is where the shooter set the weight down (metres from their end). It has to be inside the start box (`START` in `src/rules.ts`); a shot without it launches from the default spot, `TABLE.launchD`.
 - The match state carries `end` (which end is shooting this round; it flips in `startNextRound`) and `seed` (the match's sand seed). Both browsers turn the table to the room's `end`, and every shot's sand field is `sandSeed(seed, round, shotIndex)`, known before the throw, so the shooter can still animate without waiting for the network.
 - On a `shot`, the room checks the seat, the turn, `seq`, the `end` (if sent), that the opponent is connected, and that the values are ones a real gesture can produce. It then runs the shot to rest with the same solver the browser uses (`src/match.ts` → `src/physics.ts`), applies gutters, falls, and the foul-line sweep, scores the round after the 8th weight, and broadcasts `shot` with the input plus the new room snapshot.
 - Both browsers animate the throw locally from the pre-shot table (the shooter's starts right away, without waiting for the network). When the animation settles, each browser snaps the weights to the room's positions and takes turn, scores, and round state from the room. A rejected or lost shot is rewound from the room's snapshot, and a shot lost during a reconnect is re-sent.
@@ -88,6 +88,9 @@ The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`. 
 | `SURFACE.beadColor` / `SURFACE.beadGlow` | `src/surface.ts` | `#fbf3e0` / `#3a3222` | Albedo and emissive of the 3D sand beads. |
 | `SURFACE.ink` / `SURFACE.red` | `src/surface.ts` | `#16161a` / `#80130c` | Zone lines and numbers, and the foul line. `src/surface.test.ts` fails if the wood gets dark enough to hurt their contrast, if the sand loses its edge, gets coarser, or thins out, or if the bead count outgrows a phone-friendly triangle budget. |
 | `TEAM_COLORS` | `src/teams.ts` | `#ff4550` / `#27d3ff` | Red and cyan: weights, aim guide, table strips and every team-coloured bit of the HUD. `src/style.css` repeats them as `--a` / `--b`; `src/teams.test.ts` fails if the two drift apart, if red stops reading on the dark HUD, or if it gets too close to the foul line. |
+| `START.minD` / `START.maxD` | `src/rules.ts` | `0.15` / `0.6` m | Start box depth: how close to the back edge, and how far forward (leading edge on `TABLE.startLine`), the weight can be set down. |
+| `GESTURE.placeSlop` / `GESTURE.shotSlop` | `src/gesture.ts` | `14` / `10` px | Sideways travel that picks the weight up, and the up/down travel that commits a touch to a throw first. |
+| `GESTURE.reach` | `src/gesture.ts` | `0.45` m | How far past the start box, down the table, a touch can still pick the weight up. |
 | `ROAM` | `src/rig.ts` | see file | Free-roam limits: the box the camera and its pivot stay in, zoom range, and how low it can orbit. |
 
 With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 4 cm in length of where it would on perfectly even wax (one standard deviation). `src/rules.test.ts` fails if that spread grows past 4 cm sideways or 7 cm in length. Set `drift` and `grip` to 0 for a perfectly predictable table.
@@ -115,7 +118,7 @@ Requires Node 22.12 or newer.
 ```bash
 npm install
 npm run dev          # Vite on http://localhost:5173: local and CPU play (no API)
-npm test             # rules, ends, sand physics, match engine / sync, camera feel, room codes, history validation
+npm test             # rules, start box, gestures, ends, sand physics, match engine / sync, camera feel, room codes, history validation
 npm run build        # type-check (app + Worker), then write static assets to dist/
 ```
 
@@ -142,7 +145,8 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | `src/swap.ts` | End-swap camera path between rounds (pure maths, tested in `src/camera.test.ts`) |
 | `src/textures.ts` | Canvas-generated textures (table, matte zone markings, concrete, aim arrow). No image assets. |
 | `src/loading.ts` | "Waxing the table..." start-up overlay. A three.js `LoadingManager` counts the scene's build steps (`Stage.buildSteps`), the shader compile, and the first frame; the bar repaints between steps. A step that throws or hangs past 15 s lifts the overlay with a console error. Tested in `src/loading.test.ts`. |
-| `src/main.ts` | Match and round state machine, online settle and resync, pull-back and flick input, fall animations, HUD, menu, waiting room |
+| `src/main.ts` | Match and round state machine, online settle and resync, pull-back, flick, and move-the-weight input, fall animations, HUD, menu, waiting room |
+| `src/gesture.ts` | Tells a throw (pull or flick) from picking the weight up to move it, and where on the table a touch can pick it up (tested in `src/gesture.test.ts`) |
 | `src/scoreboard.ts`, `src/history.ts` | Scoreboard panel; SHUFL-shaped game records |
 | `src/ai.ts` | CPU opponent. It either draws to the 3 or 4 zone or knocks off your leading weight, with some aim and power noise. |
 | `src/audio.ts` | Synthesized WebAudio effects, with nothing loaded from the network. The slide rumble runs straight to the output. Hits (inharmonic metal partials plus a click), launch thump, gutter drop and rattle, score bell chord, blank-round mallet, brass win fanfare, and UI clicks go through a compressor and a synthesized room reverb. |

@@ -1,5 +1,5 @@
 import { speedForDistance, MAX_SPEED } from "./physics.ts";
-import { TABLE, isLive, zoneOf, type Team } from "./rules.ts";
+import { LANE, TABLE, isLive, zoneOf, type Team } from "./rules.ts";
 
 export const MIN_SPEED = 0.6;
 export const MAX_ANGLE = 0.14;
@@ -22,7 +22,6 @@ function gauss(rand: () => number): number {
   return Math.sqrt(-2 * Math.log(rand() || 1e-9)) * Math.cos(2 * Math.PI * rand());
 }
 
-const LANE = TABLE.width / 2 - TABLE.puckRadius - 0.02;
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 function aimAt(tx: number, td: number, overshoot: number, fromX: number): Shot {
