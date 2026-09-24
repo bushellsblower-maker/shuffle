@@ -12,6 +12,7 @@ import {
 } from "../src/protocol.ts";
 import { randomToken } from "../src/room-code.ts";
 import type { Team } from "../src/rules.ts";
+import { TEAM_NAMES } from "../src/teams.ts";
 import { insertGame } from "./api.ts";
 import { parseGameBody } from "./games.ts";
 import type { Env } from "./index.ts";
@@ -227,7 +228,7 @@ export class Room extends DurableObject<Env> {
     if (m.winner === null) return;
     const body = gameBody({
       id: `s3d-online-${d.code}-${m.startedAt}`,
-      names: [d.seats[0]?.name ?? "ORANGE", d.seats[1]?.name ?? "CYAN"],
+      names: [d.seats[0]?.name ?? TEAM_NAMES[0], d.seats[1]?.name ?? TEAM_NAMES[1]],
       scores: m.scores,
       target: m.target,
       winner: m.winner,

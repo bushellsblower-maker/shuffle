@@ -6,9 +6,9 @@ import { TABLE, toTable, type End, type Team } from "./rules.ts";
 import { CENTRE, CameraRig, ROAM, clampRoam, toWorld, type CameraMode } from "./rig.ts";
 import { SURFACE, beadRadius } from "./surface.ts";
 import { SWAP } from "./swap.ts";
+import { TEAM_COLORS, dimColor } from "./teams.ts";
 import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
-export const TEAM_COLORS = ["#ff7a1a", "#27d3ff"] as const;
 /** Neon on both end walls. Split over two lines so it stays big enough to read on a phone. */
 export const WALL_SIGN = ["Everyday I'm", "Shuffling"] as const;
 
@@ -483,7 +483,7 @@ export class Stage {
       rubber: new THREE.MeshStandardMaterial({ color: 0x1b1b1d, roughness: 0.95 }),
       apron: new THREE.MeshStandardMaterial({ color: 0x1d2024, roughness: 0.6, metalness: 0.4 }),
       leg: new THREE.MeshStandardMaterial({ color: 0x24272b, metalness: 0.7, roughness: 0.4 }),
-      strips: [dim(0x8a4412), dim(0x16728a)],
+      strips: [dim(dimColor(TEAM_COLORS[0], 0.54)), dim(dimColor(TEAM_COLORS[1], 0.54))],
       endStrip: dim(0x8a6a10),
     };
     const shade = new THREE.MeshStandardMaterial({ color: 0x2c3a34, metalness: 0.6, roughness: 0.45, side: THREE.DoubleSide });
@@ -616,9 +616,9 @@ export class Stage {
       this.spots.push(spot);
       this.scene.add(spot, spot.target);
     });
-    const warm = new THREE.PointLight(0xff7a1a, 3, 6, 1.5);
+    const warm = new THREE.PointLight(TEAM_COLORS[0], 3, 6, 1.5);
     warm.position.set(-1.6, -0.5, -2);
-    const cool = new THREE.PointLight(0x27d3ff, 3, 6, 1.5);
+    const cool = new THREE.PointLight(TEAM_COLORS[1], 3, 6, 1.5);
     cool.position.set(1.6, -0.5, -5.2);
     this.scene.add(warm, cool);
   }
