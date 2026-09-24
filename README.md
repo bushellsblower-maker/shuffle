@@ -78,6 +78,12 @@ The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`. 
 | `CAMERA.engage` | `src/rig.ts` | `0.6` s | How long the look-ahead takes to ramp in after the throw, so the camera pulls away from the aim view instead of lurching. |
 | `CAMERA.blend.<mode>` | `src/rig.ts` | see file | Switching into a mode eases out the old view over `base + perMetre × distance` seconds (capped at `max`), with no jump in speed or acceleration at either end. `look` scales the look point's time: under 1 turns first (follow), over 1 keeps looking down the table while the camera pulls back (aim). |
 | `CAMERA.blendPerSpeed` | `src/rig.ts` | `0.07` s per m/s | Extra blend time when the camera is already moving (a throw during the return), so it turns round gently. |
+| `SURFACE.woodLightness` | `src/surface.ts` | `[59, 65]` % | Plank lightness range (hsl) of the playing surface, shared with the hall's other boards. Lower = darker wood, so the sand stands out more. |
+| `SURFACE.woodHue` / `SURFACE.woodSaturation` | `src/surface.ts` | `[34, 40]` / `54` % | Plank hue range and saturation. |
+| `SURFACE.grainDarken` | `src/surface.ts` | `16` | How many lightness points the grain streaks sit under their plank. |
+| `SURFACE.dustAlpha` | `src/surface.ts` | `[0.22, 0.56]` | Opacity range of the sand dust specks painted into the wood. |
+| `SURFACE.beadColor` / `SURFACE.beadGlow` | `src/surface.ts` | `#fbf3e0` / `#3a3222` | Albedo and emissive of the 3D sand beads. |
+| `SURFACE.ink` / `SURFACE.red` | `src/surface.ts` | `#16161a` / `#b42014` | Zone lines and numbers, and the foul line. `src/surface.test.ts` fails if the wood gets dark enough to hurt their contrast, or if the sand loses its edge over the old surface. |
 | `ROAM` | `src/rig.ts` | see file | Free-roam limits: the box the camera and its pivot stay in, zoom range, and how low it can orbit. |
 
 With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 4 cm in length of where it would on perfectly even wax (one standard deviation). `src/rules.test.ts` fails if that spread grows past 4 cm sideways or 7 cm in length. Set `drift` and `grip` to 0 for a perfectly predictable table.

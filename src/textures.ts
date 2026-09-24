@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { TABLE } from "./rules.ts";
+import { SURFACE } from "./surface.ts";
 
 function rng(seed: number): () => number {
   let s = seed >>> 0;
@@ -25,16 +26,17 @@ export function tableTexture(maxAnisotropy: number): THREE.CanvasTexture {
   const rand = rng(7);
   const toY = (d: number) => ((TABLE.length - d) / TABLE.length) * H;
 
+  const span = (r: readonly [number, number]) => r[0] + rand() * (r[1] - r[0]);
   const planks = 8;
   for (let p = 0; p < planks; p++) {
     const x0 = (p * W) / planks;
-    const hue = 34 + rand() * 6;
-    const light = 70 + rand() * 7;
-    g.fillStyle = `hsl(${hue} 52% ${light}%)`;
+    const hue = span(SURFACE.woodHue);
+    const light = span(SURFACE.woodLightness);
+    g.fillStyle = `hsl(${hue} ${SURFACE.woodSaturation}% ${light}%)`;
     g.fillRect(x0, 0, W / planks, H);
     for (let i = 0; i < 70; i++) {
       const gx = x0 + rand() * (W / planks);
-      g.strokeStyle = `hsla(${hue - 6} 45% ${light - 18}% / ${0.05 + rand() * 0.12})`;
+      g.strokeStyle = `hsla(${hue - 6} 45% ${light - SURFACE.grainDarken}% / ${0.05 + rand() * 0.12})`;
       g.lineWidth = 0.6 + rand() * 1.6;
       g.beginPath();
       g.moveTo(gx, 0);
@@ -72,7 +74,7 @@ export function tableTexture(maxAnisotropy: number): THREE.CanvasTexture {
     const across = Math.max(-1, Math.min(1, (rand() + rand() + rand() - 1.5) * 0.9));
     const x = W / 2 + across * (W / 2);
     const y = rand() * H;
-    const a = 0.18 + rand() * 0.32;
+    const a = span(SURFACE.dustAlpha);
     g.fillStyle = rand() < 0.7 ? `rgba(255,248,230,${a})` : `rgba(200,180,140,${a})`;
     const s = rand() < 0.85 ? 1 : 2;
     g.fillRect(x, y, s, s);
@@ -99,8 +101,7 @@ export function markingsTexture(maxAnisotropy: number): THREE.CanvasTexture {
   const px = H / TABLE.length;
   const toY = (d: number) => (TABLE.length - d) * px;
   const ends = [TABLE.zones[1], TABLE.zones[2], TABLE.zones[3], TABLE.length];
-  const ink = "#16161a";
-  const red = "#e0301e";
+  const { ink, red } = SURFACE;
 
   for (const mirror of [false, true]) {
     const py = (d: number) => toY(mirror ? TABLE.length - d : d);
