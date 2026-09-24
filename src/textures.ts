@@ -10,9 +10,10 @@ function rng(seed: number): () => number {
 }
 
 /**
- * Maple planks with the same zones painted at both ends, plus a dusting of
- * sand that is heaviest down the middle of the lane. Canvas y=0 is the far
- * end (d = length, as seen from end 0).
+ * Maple planks with the zone tints at both ends, plus a dusting of sand that is
+ * heaviest down the middle of the lane. The lines and numbers are a separate
+ * matte decal (`markingsTexture`) so the clear coat's reflections can't wash
+ * them out. Canvas y=0 is the far end (d = length, as seen from end 0).
  */
 export function tableTexture(maxAnisotropy: number): THREE.CanvasTexture {
   const W = 512;
@@ -54,52 +55,16 @@ export function tableTexture(maxAnisotropy: number): THREE.CanvasTexture {
   g.fillText("SHUFFLE", 0, 0);
   g.restore();
 
-  // Each end's markings in shooter-relative d; end 1's are the same art turned half round.
+  const ends = [TABLE.zones[1], TABLE.zones[2], TABLE.zones[3], TABLE.length];
   for (const mirror of [false, true]) {
     const py = (d: number) => toY(mirror ? TABLE.length - d : d);
-    const flip = mirror ? -1 : 1;
     const tints = ["rgba(255,122,26,0.10)", "rgba(255,194,26,0.13)", "rgba(255,122,26,0.17)", "rgba(230,40,40,0.2)"];
-    const ends = [TABLE.zones[1], TABLE.zones[2], TABLE.zones[3], TABLE.length];
     TABLE.zones.forEach((start, i) => {
       g.fillStyle = tints[i];
       const a = py(ends[i]);
       const b = py(start);
       g.fillRect(0, Math.min(a, b), W, Math.abs(b - a));
     });
-
-    g.fillStyle = "rgba(20,20,24,0.9)";
-    TABLE.zones.slice(1).forEach((z) => g.fillRect(0, py(z) - 5, W, 10));
-
-    g.fillStyle = "#e0301e";
-    g.fillRect(0, py(TABLE.foul) - 9, W, 18);
-    g.fillStyle = "rgba(255,255,255,0.8)";
-    for (let x = 0; x < W; x += 48) g.fillRect(x, py(TABLE.foul) - 2, 24, 4);
-
-    g.textAlign = "center";
-    g.textBaseline = "middle";
-    const numbers = ["1", "2", "3", "4"];
-    TABLE.zones.forEach((start, i) => {
-      const mid = (start + ends[i]) / 2;
-      g.save();
-      g.translate(W / 2, py(mid));
-      if (mirror) g.rotate(Math.PI);
-      g.scale(1, 2.6);
-      g.font = `900 ${i === 3 ? 60 : 100}px "Arial Black", Impact, sans-serif`;
-      g.fillStyle = "rgba(20,20,24,0.78)";
-      g.fillText(numbers[i], 0, 0);
-      g.restore();
-    });
-
-    g.save();
-    g.translate(W / 2, py(TABLE.foul) + 60 * flip);
-    if (mirror) g.rotate(Math.PI);
-    g.font = `900 34px "Arial Black", Impact, sans-serif`;
-    g.fillStyle = "rgba(224,48,30,0.85)";
-    g.fillText("FOUL LINE", 0, 0);
-    g.restore();
-
-    g.fillStyle = "rgba(20,20,24,0.55)";
-    g.fillRect(0, py(TABLE.launchD + TABLE.puckRadius + 0.1) - 3, W, 6);
   }
 
   // Sand dust: fine pale specks, heaviest down the middle of the lane.
@@ -111,6 +76,70 @@ export function tableTexture(maxAnisotropy: number): THREE.CanvasTexture {
     g.fillStyle = rand() < 0.7 ? `rgba(255,248,230,${a})` : `rgba(200,180,140,${a})`;
     const s = rand() < 0.85 ? 1 : 2;
     g.fillRect(x, y, s, s);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+/**
+ * Zone lines, foul line, zone numbers, and the launch line for both ends, on
+ * a transparent canvas laid over the table as a matte decal. Same layout as
+ * `tableTexture` (y=0 is the far end); end 1's art is end 0's turned half round.
+ */
+export function markingsTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const W = 256;
+  const H = 2048;
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const g = c.getContext("2d")!;
+  const px = H / TABLE.length;
+  const toY = (d: number) => (TABLE.length - d) * px;
+  const ends = [TABLE.zones[1], TABLE.zones[2], TABLE.zones[3], TABLE.length];
+  const ink = "#16161a";
+  const red = "#e0301e";
+
+  for (const mirror of [false, true]) {
+    const py = (d: number) => toY(mirror ? TABLE.length - d : d);
+    const flip = mirror ? -1 : 1;
+    // Widths in metres, so they stay put if the canvas size changes.
+    const band = (d: number, width: number) => g.fillRect(0, py(d) - (width * px) / 2, W, width * px);
+
+    g.fillStyle = ink;
+    TABLE.zones.slice(1).forEach((z) => band(z, 0.02));
+
+    g.fillStyle = red;
+    band(TABLE.foul, 0.032);
+    g.fillStyle = "#fff4e8";
+    for (let x = 0; x < W; x += 24) g.fillRect(x, py(TABLE.foul) - 1, 12, 2);
+
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    const numbers = ["1", "2", "3", "4"];
+    TABLE.zones.forEach((start, i) => {
+      g.save();
+      g.translate(W / 2, py((start + ends[i]) / 2));
+      if (mirror) g.rotate(Math.PI);
+      g.scale(1, 2.6);
+      g.font = `900 ${i === 3 ? 30 : 50}px "Arial Black", Impact, sans-serif`;
+      g.fillStyle = ink;
+      g.fillText(numbers[i], 0, 0);
+      g.restore();
+    });
+
+    g.save();
+    g.translate(W / 2, py(TABLE.foul) + 30 * flip);
+    if (mirror) g.rotate(Math.PI);
+    g.font = `900 17px "Arial Black", Impact, sans-serif`;
+    g.fillStyle = red;
+    g.fillText("FOUL LINE", 0, 0);
+    g.restore();
+
+    g.fillStyle = "rgba(22,22,26,0.7)";
+    band(TABLE.launchD + TABLE.puckRadius + 0.1, 0.01);
   }
 
   const tex = new THREE.CanvasTexture(c);

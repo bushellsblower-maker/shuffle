@@ -33,6 +33,8 @@ interface Blend {
  *   current velocity carries into the move). See `Blend`.
  * - `blendPerSpeed`: extra blend seconds per m/s the camera is already moving, so
  *   a camera caught mid-flight (a throw during the return) turns round gently.
+ * - `envSmooth`: smooth time (s) for the reflections turning with the end when
+ *   the ends change without the fly-around.
  */
 export const CAMERA = {
   followSmooth: 0.3,
@@ -44,6 +46,7 @@ export const CAMERA = {
     overview: { base: 1, perMetre: 0.08, max: 2, look: 1.1 },
   } satisfies Record<CameraMode, Blend>,
   blendPerSpeed: 0.07,
+  envSmooth: 0.4,
 } as const;
 
 const v3 = (x = 0, y = 0, z = 0): Vec3 => ({ x, y, z });
@@ -70,6 +73,7 @@ interface Swap {
   from: { pos: Vec3; look: Vec3 };
   hall: Vec3;
   side: 1 | -1;
+  yaw0: number;
 }
 
 /**
@@ -85,6 +89,8 @@ export class CameraRig {
   portrait = true;
   /** 0..1: how far the house lights are up for the end-swap fly-around. */
   reveal = 0;
+  /** Yaw of the environment reflections (radians): turned half round with the end so both ends reflect the same room. */
+  readonly envYaw: Spring = { value: 0, vel: 0 };
 
   private modeNow: CameraMode = "overview";
   private endNow: End = 0;
@@ -158,6 +164,7 @@ export class CameraRig {
       from: { pos: { ...this.pos }, look: { ...this.look } },
       hall: v3(-camSide * 2.2, -0.45, CENTRE.z),
       side,
+      yaw0: this.envYaw.value,
     };
   }
 
@@ -169,6 +176,8 @@ export class CameraRig {
     set(this.look, this.wantLook);
     set(this.vel, v3());
     set(this.lookVel, v3());
+    this.envYaw.value = this.yawTarget();
+    this.envYaw.vel = 0;
   }
 
   update(dt: number): void {
@@ -192,6 +201,8 @@ export class CameraRig {
       set(pos, pose.pos);
       set(look, pose.look);
       this.reveal = pose.reveal;
+      this.envYaw.value = sw.yaw0 + (this.yawTarget() - sw.yaw0) * pose.progress;
+      this.envYaw.vel = 0;
       if (sw.t >= SWAP.duration) this.swap = null;
     } else {
       set(pos, this.wantPos);
@@ -209,6 +220,7 @@ export class CameraRig {
         if (b.t >= Math.max(b.pos.dur, b.look.dur)) this.blend = null;
       }
       this.reveal *= Math.exp(-dt * 4);
+      smoothDamp(this.envYaw, this.yawTarget(), CAMERA.envSmooth, dt);
     }
     this.measure(pos, look, dt);
     set(this.pos, pos);
@@ -223,6 +235,10 @@ export class CameraRig {
     this.lookVel.x = (look.x - this.look.x) / dt;
     this.lookVel.y = (look.y - this.look.y) / dt;
     this.lookVel.z = (look.z - this.look.z) / dt;
+  }
+
+  private yawTarget(): number {
+    return this.endNow === 1 ? Math.PI : 0;
   }
 
   /** Ease out the difference between where the camera is and the new mode's view, keeping its current velocity. */

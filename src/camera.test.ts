@@ -441,7 +441,7 @@ test("blend knobs: look turns first into follow, trails a little on the way back
   assert.ok(CAMERA.engage > 0 && CAMERA.followSmooth > 0);
 });
 
-/* ---------- ends ---------- */
+/* ---------- ends and reflections ---------- */
 
 test("the back wall reads exactly: Everyday I'm Shuffling", () => {
   assert.equal(WALL_SIGN.join(" "), "Everyday I'm Shuffling");
@@ -459,6 +459,7 @@ test("end swap flies out over the hall and lands exactly behind the new end", ()
     assert.ok(dist(at(0).pos, from.pos) < 1e-9 && dist(at(0).look, from.look) < 1e-9, "starts where the camera is");
     assert.ok(dist(at(1).pos, to.pos) < 1e-9 && dist(at(1).look, to.look) < 1e-9, "ends on the new end's view");
     assert.ok(at(0).reveal < 1e-9 && at(1).reveal < 1e-9 && Math.abs(at(0.5).reveal - 1) < 1e-9, "house lights peak mid-flight");
+    assert.ok(at(0).progress === 0 && at(1).progress === 1, "progress runs 0 → 1");
 
     const frames = Math.round(SWAP.duration * 60);
     let widest = 0;
@@ -479,6 +480,34 @@ test("end swap flies out over the hall and lands exactly behind the new end", ()
     assert.ok(dist(at(1 / frames).pos, from.pos) < 0.01 && dist(at(1 - 1 / frames).pos, to.pos) < 0.01, "eases in and out");
     assert.ok(Math.abs(at(0.5).pos.x) > 4, "the camera is out to the side of the hall mid-flight");
   }
+});
+
+test("reflections turn with the end, so end 1 sees the same lit room as end 0", () => {
+  const rig = new CameraRig();
+  rig.setMode("head");
+  rig.snap();
+  assert.equal(rig.envYaw.value, 0);
+  rig.setEnd(1, true);
+  rig.setMode("aim");
+  let mid = NaN;
+  let reveal = 0;
+  for (let t = 0; t < SWAP.duration + 0.1; t += 1 / 60) {
+    rig.update(1 / 60);
+    if (Math.abs(t - SWAP.duration / 2) < 1 / 120) mid = rig.envYaw.value;
+    reveal = Math.max(reveal, rig.reveal);
+  }
+  assert.ok(mid > 0.5 && mid < Math.PI - 0.5, `turning mid-flight (${mid.toFixed(2)})`);
+  assert.ok(Math.abs(rig.envYaw.value - Math.PI) < 1e-9, "a half turn once landed at end 1");
+  assert.ok(reveal > 0.99 && rig.reveal < 1e-3, "house lights up mid-flight and back down after landing");
+  // End 1's aim view is end 0's turned half round about the table centre, reflections included.
+  const aim0 = new CameraRig();
+  aim0.setMode("aim");
+  aim0.snap();
+  assert.ok(Math.abs(rig.pos.x + aim0.pos.x) < 1e-9 && Math.abs(rig.pos.z - (-L - aim0.pos.z)) < 1e-9 && Math.abs(rig.pos.y - aim0.pos.y) < 1e-9);
+
+  rig.setEnd(0);
+  for (let t = 0; t < 3; t += 1 / 60) rig.update(1 / 60);
+  assert.ok(Math.abs(rig.envYaw.value) < 1e-3, "and back without the fly-around");
 });
 
 test("a shot mid fly-around takes over smoothly", () => {

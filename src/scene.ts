@@ -4,7 +4,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { TABLE, toTable, type End, type Team } from "./rules.ts";
 import { CENTRE, CameraRig, toWorld, type CameraMode } from "./rig.ts";
 import { SWAP } from "./swap.ts";
-import { aimTexture, concreteTexture, feltTexture, glowTexture, neonTexture, tableTexture } from "./textures.ts";
+import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
 export const TEAM_COLORS = ["#ff7a1a", "#27d3ff"] as const;
 /** Neon on both end walls. Split over two lines so it stays big enough to read on a phone. */
@@ -58,6 +58,7 @@ export interface PuckView {
 
 interface TableMats {
   surface: THREE.Material;
+  markings: THREE.Material;
   edgeWood: THREE.Material;
   steel: THREE.Material;
   dark: THREE.Material;
@@ -90,6 +91,12 @@ function buildShuffleboard(t: THREE.Object3D, m: TableMats, x0: number): void {
   surface.rotation.x = -Math.PI / 2;
   surface.position.set(x0, 0, -L / 2);
   t.add(surface);
+  const marks = new THREE.Mesh(surface.geometry, m.markings);
+  marks.rotation.x = -Math.PI / 2;
+  marks.position.set(x0, 0.0004, -L / 2);
+  // Over the surface's clear coat but under the aim guide and lamp glow.
+  marks.renderOrder = -1;
+  t.add(marks);
 
   t.add(box(W, 0.08, L, m.edgeWood, x0, -0.041, -L / 2));
   const outerX = W / 2 + GUTTER_W + RAIL_W / 2;
@@ -123,9 +130,11 @@ function buildShuffleboard(t: THREE.Object3D, m: TableMats, x0: number): void {
 function bake(group: THREE.Group): THREE.Mesh[] {
   group.updateMatrixWorld(true);
   const byMat = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  const order = new Map<THREE.Material, number>();
   group.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     const mat = o.material as THREE.Material;
+    order.set(mat, o.renderOrder);
     const g = (o.geometry as THREE.BufferGeometry).clone().applyMatrix4(o.matrixWorld);
     const list = byMat.get(mat) ?? [];
     list.push(g);
@@ -140,6 +149,7 @@ function bake(group: THREE.Group): THREE.Mesh[] {
     if (!merged) return;
     const mesh = new THREE.Mesh(merged, mat);
     mesh.receiveShadow = true;
+    mesh.renderOrder = order.get(mat) ?? 0;
     mesh.matrixAutoUpdate = false;
     out.push(mesh);
   });
@@ -199,16 +209,28 @@ export class Stage {
     this.camera.layers.enable(LAMP_LAYER);
     this.aimHeadCam();
 
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
     const surface = new THREE.MeshPhysicalMaterial({
-      map: tableTexture(this.renderer.capabilities.getMaxAnisotropy()),
+      map: tableTexture(aniso),
       roughness: 0.32,
       clearcoat: 1,
       clearcoatRoughness: 0.12,
     });
-    this.buildTable(surface);
+    // Matte paint over the clear coat: the lamps and room still gleam on the wood, but not on the lines.
+    const markings = new THREE.MeshStandardMaterial({
+      map: markingsTexture(aniso),
+      roughness: 0.9,
+      metalness: 0,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    this.buildTable(surface, markings);
     this.buildSand();
     this.buildRoom();
-    this.buildHall(surface);
+    this.buildHall(surface, markings);
     this.buildLights();
     this.scene.add(this.play);
 
@@ -227,11 +249,12 @@ export class Stage {
     this.play.add(this.aim);
   }
 
-  private buildTable(surface: THREE.Material): void {
+  private buildTable(surface: THREE.Material, markings: THREE.Material): void {
     const t = this.table;
     this.scene.add(t);
     buildShuffleboard(t, {
       surface,
+      markings,
       edgeWood: new THREE.MeshStandardMaterial({ color: 0x5a3a1c, roughness: 0.55 }),
       steel: new THREE.MeshStandardMaterial({ color: 0x3a3f45, metalness: 0.85, roughness: 0.45 }),
       dark: new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.7, metalness: 0.2 }),
@@ -419,12 +442,13 @@ export class Stage {
   }
 
   /** The rest of the room: a shuffleboard either side and a row of pool tables beyond each, all static and baked. */
-  private buildHall(surface: THREE.Material): void {
+  private buildHall(surface: THREE.Material, markings: THREE.Material): void {
     const hall = new THREE.Group();
     const rand = rng(29);
     const dim = (hex: number) => new THREE.MeshBasicMaterial({ color: hex });
     const tableMats: TableMats = {
       surface,
+      markings,
       edgeWood: new THREE.MeshStandardMaterial({ color: 0x5a3a1c, roughness: 0.6 }),
       steel: new THREE.MeshStandardMaterial({ color: 0x3a3f45, metalness: 0.8, roughness: 0.5 }),
       dark: new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.75 }),
@@ -697,6 +721,9 @@ export class Stage {
     rig.update(dt);
     this.camera.position.set(rig.pos.x, rig.pos.y, rig.pos.z);
     this.camera.lookAt(rig.look.x, rig.look.y, rig.look.z);
+    // RoomEnvironment is lopsided (its biggest softbox is on +z), so the reflections turn with the end;
+    // otherwise end 1 looks straight into that softbox's glare on the clear coat.
+    this.scene.environmentRotation.y = rig.envYaw.value;
 
     const hemi = HEMI + SWAP.houseLights * rig.reveal;
     this.hemi.intensity = hemi;

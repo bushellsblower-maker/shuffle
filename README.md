@@ -125,10 +125,10 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | `src/protocol.ts`, `src/room-code.ts` | Online message types and parsing; room codes and seat tokens |
 | `src/online.ts` | Browser room client: create/join, WebSocket with keepalive, reconnect, and room-gone detection |
 | `src/scene.ts` | Three.js scene: maple table marked at both ends, pits at both ends, instanced sand beads that weights plough aside, the hall (a shuffleboard either side, pool tables beyond, baked into a few draw calls), lamps, "Everyday I'm Shuffling" neon, chrome weights, HEAD inset |
-| `src/rig.ts` | Camera rig (pure maths, tested in `src/camera.test.ts`): aim, follow, HEAD, and overview views, blends between them that keep the camera's velocity, and the end swap |
+| `src/rig.ts` | Camera rig (pure maths, tested in `src/camera.test.ts`): aim, follow, HEAD, and overview views, blends between them that keep the camera's velocity, the end swap, reflections that turn with the end |
 | `src/smooth.ts` | Camera maths: a look-ahead target toward where the weight will stop, an exactly solved critically damped spring, a quintic ease-out for blends, and soft clamps at the far end |
 | `src/swap.ts` | End-swap camera path between rounds (pure maths, tested in `src/camera.test.ts`) |
-| `src/textures.ts` | Canvas-generated textures (table, concrete, aim arrow). No image assets. |
+| `src/textures.ts` | Canvas-generated textures (table, matte zone markings, concrete, aim arrow). No image assets. |
 | `src/main.ts` | Match and round state machine, online settle and resync, pull-back and flick input, fall animations, HUD, menu, waiting room |
 | `src/scoreboard.ts`, `src/history.ts` | Scoreboard panel; SHUFL-shaped game records |
 | `src/ai.ts` | CPU opponent. It either draws to the 3 or 4 zone or knocks off your leading weight, with some aim and power noise. |
