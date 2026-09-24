@@ -140,6 +140,7 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | `src/smooth.ts` | Camera maths: a look-ahead target toward where the weight will stop, an exactly solved critically damped spring, a quintic ease-out for blends, and soft clamps at the far end |
 | `src/swap.ts` | End-swap camera path between rounds (pure maths, tested in `src/camera.test.ts`) |
 | `src/textures.ts` | Canvas-generated textures (table, matte zone markings, concrete, aim arrow). No image assets. |
+| `src/loading.ts` | "Waxing the table..." start-up overlay. A three.js `LoadingManager` counts the scene's build steps (`Stage.buildSteps`), the shader compile, and the first frame; the bar repaints between steps. A step that throws or hangs past 15 s lifts the overlay with a console error. Tested in `src/loading.test.ts`. |
 | `src/main.ts` | Match and round state machine, online settle and resync, pull-back and flick input, fall animations, HUD, menu, waiting room |
 | `src/scoreboard.ts`, `src/history.ts` | Scoreboard panel; SHUFL-shaped game records |
 | `src/ai.ts` | CPU opponent. It either draws to the 3 or 4 zone or knocks off your leading weight, with some aim and power noise. |

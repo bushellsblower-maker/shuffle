@@ -2,6 +2,7 @@ import "./style.css";
 import { MAX_ANGLE, planCpuShot, powerOf, speedOf, type Shot } from "./ai.ts";
 import { Sound } from "./audio.ts";
 import { gameBody } from "./history.ts";
+import { startLoading } from "./loading.ts";
 import { randomSeed, roundLog, upgradeMatch, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
 import { OnlineClient, clearTicket, createRoom, joinRoom, loadTicket, roomLink, roomPreview, saveTicket, type LinkState } from "./online.ts";
 import { World, sandSeed, type Body } from "./physics.ts";
@@ -64,8 +65,10 @@ const CPU: Team = 1;
 const DEFAULT_NAMES: [string, string] = ["ORANGE", "CYAN"];
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const loading = startLoading($("loading"));
 const canvas = $<HTMLCanvasElement>("c");
 const stage = new Stage(canvas);
+await loading.run(stage.buildSteps());
 const sound = new Sound();
 const world = new World();
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -1430,4 +1433,7 @@ else {
   if (linkCode) prepareJoin(linkCode);
   else if (location.pathname !== "/") history.replaceState(null, "", "/");
 }
-requestAnimationFrame(frame);
+requestAnimationFrame((now) => {
+  frame(now);
+  loading.ready();
+});
