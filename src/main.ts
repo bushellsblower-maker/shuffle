@@ -3,6 +3,7 @@ import { MAX_ANGLE, planCpuShot, powerOf, speedOf, type Shot } from "./ai.ts";
 import { Sound } from "./audio.ts";
 import { dragIntent, inReach, type DragIntent } from "./gesture.ts";
 import { gameBody } from "./history.ts";
+import { startLoading } from "./loading.ts";
 import { randomSeed, roundLog, upgradeMatch, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
 import { OnlineClient, clearTicket, createRoom, joinRoom, loadTicket, roomLink, roomPreview, saveTicket, type LinkState } from "./online.ts";
 import { World, sandSeed, type Body } from "./physics.ts";
@@ -21,10 +22,11 @@ import {
   type RoundResult,
   type Team,
 } from "./rules.ts";
-import { GUTTER_W, GUTTER_Y, PIT_LEN, Stage, TEAM_COLORS, type PuckView } from "./scene.ts";
+import { GUTTER_W, GUTTER_Y, PIT_LEN, Stage, type PuckView } from "./scene.ts";
 import { Scoreboard, flushUnsent, recordGame } from "./scoreboard.ts";
 import { followLead } from "./smooth.ts";
 import { SWAP } from "./swap.ts";
+import { TEAM_COLORS, TEAM_NAMES } from "./teams.ts";
 
 type Mode = "2p" | "cpu" | "online";
 interface Settings {
@@ -67,11 +69,13 @@ type Phase = "menu" | "aim" | "rolling" | "resolving" | "settle" | "roundEnd" | 
 
 const R = TABLE.puckRadius;
 const CPU: Team = 1;
-const DEFAULT_NAMES: [string, string] = ["ORANGE", "CYAN"];
+const DEFAULT_NAMES: [string, string] = [...TEAM_NAMES];
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const loading = startLoading($("loading"));
 const canvas = $<HTMLCanvasElement>("c");
 const stage = new Stage(canvas);
+await loading.run(stage.buildSteps());
 const sound = new Sound();
 const world = new World();
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -80,8 +84,10 @@ const other = (t: Team) => (1 - t) as Team;
 function loadSettings(): Settings {
   try {
     const s = JSON.parse(localStorage.getItem("shuffle.settings") ?? "") as Partial<Settings>;
+    // Team 0 used to be orange; a saved "ORANGE" is the old default, not a chosen name.
+    const first = s.names?.[0] === "ORANGE" ? "" : s.names?.[0];
     return {
-      names: [s.names?.[0] || DEFAULT_NAMES[0], s.names?.[1] || DEFAULT_NAMES[1]],
+      names: [first || DEFAULT_NAMES[0], s.names?.[1] || DEFAULT_NAMES[1]],
       target: s.target === 15 ? 15 : 21,
       mode: s.mode === "cpu" || s.mode === "online" ? s.mode : "2p",
     };
@@ -1007,7 +1013,7 @@ function syncMenu(): void {
   document.querySelectorAll<HTMLButtonElement>("#segTarget button").forEach((b) => b.classList.toggle("on", b.dataset.v === String(settings.target)));
   document.querySelectorAll<HTMLButtonElement>("#segMode button").forEach((b) => b.classList.toggle("on", b.dataset.v === settings.mode));
   $("names").classList.toggle("solo", online);
-  $("labelA").textContent = online ? "Your name" : "Orange";
+  $("labelA").textContent = online ? "Your name" : "Red";
   $("nameBWrap").style.display = online ? "none" : "";
   $("rowTarget").style.display = online && net ? "none" : "";
   const start = $<HTMLButtonElement>("btnStart");
@@ -1470,4 +1476,7 @@ else {
   if (linkCode) prepareJoin(linkCode);
   else if (location.pathname !== "/") history.replaceState(null, "", "/");
 }
-requestAnimationFrame(frame);
+requestAnimationFrame((now) => {
+  frame(now);
+  loading.ready();
+});

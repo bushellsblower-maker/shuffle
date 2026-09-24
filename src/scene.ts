@@ -2,13 +2,14 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import type { LoadStep } from "./loading.ts";
 import { TABLE, toTable, type End, type Team } from "./rules.ts";
 import { CENTRE, CameraRig, ROAM, clampRoam, toWorld, type CameraMode } from "./rig.ts";
 import { SURFACE, beadRadius } from "./surface.ts";
 import { SWAP } from "./swap.ts";
+import { TEAM_COLORS, dimColor } from "./teams.ts";
 import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
-export const TEAM_COLORS = ["#ff7a1a", "#27d3ff"] as const;
 /** Neon on both end walls. Split over two lines so it stays big enough to read on a phone. */
 export const WALL_SIGN = ["Everyday I'm", "Shuffling"] as const;
 
@@ -204,8 +205,6 @@ export class Stage {
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
 
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environmentIntensity = ENV_INTENSITY;
     this.scene.background = new THREE.Color(0x0a0b0e);
     this.scene.fog = this.fog;
@@ -214,31 +213,6 @@ export class Stage {
 
     this.camera.layers.enable(LAMP_LAYER);
     this.aimHeadCam();
-
-    const aniso = this.renderer.capabilities.getMaxAnisotropy();
-    const surface = new THREE.MeshPhysicalMaterial({
-      map: tableTexture(aniso),
-      roughness: 0.32,
-      clearcoat: 1,
-      clearcoatRoughness: 0.12,
-    });
-    // Matte paint over the clear coat: the lamps and room still gleam on the wood, but not on the lines.
-    const markings = new THREE.MeshStandardMaterial({
-      map: markingsTexture(aniso),
-      roughness: 0.9,
-      metalness: 0,
-      transparent: true,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
-    this.buildTable(surface, markings);
-    this.buildSand();
-    this.buildRoom();
-    this.buildHall(surface, markings);
-    this.buildLights();
-    this.scene.add(this.play);
 
     const aimMat = new THREE.MeshBasicMaterial({
       map: aimTexture(),
@@ -253,6 +227,61 @@ export class Stage {
     this.aim.position.y = 0.003;
     this.aim.visible = false;
     this.play.add(this.aim);
+  }
+
+  /** The hall, built a piece at a time (each piece blocks the thread) so the loading bar can repaint in between. */
+  buildSteps(): LoadStep[] {
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
+    let surface!: THREE.MeshPhysicalMaterial;
+    let markings!: THREE.MeshStandardMaterial;
+    return [
+      [
+        "environment",
+        () => {
+          const pmrem = new THREE.PMREMGenerator(this.renderer);
+          this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+        },
+      ],
+      [
+        "table wood",
+        () => {
+          surface = new THREE.MeshPhysicalMaterial({
+            map: tableTexture(aniso),
+            roughness: 0.32,
+            clearcoat: 1,
+            clearcoatRoughness: 0.12,
+          });
+        },
+      ],
+      [
+        "table markings",
+        () => {
+          // Matte paint over the clear coat: the lamps and room still gleam on the wood, but not on the lines.
+          markings = new THREE.MeshStandardMaterial({
+            map: markingsTexture(aniso),
+            roughness: 0.9,
+            metalness: 0,
+            transparent: true,
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
+          });
+        },
+      ],
+      ["table", () => this.buildTable(surface, markings)],
+      ["sand", () => this.buildSand()],
+      ["room", () => this.buildRoom()],
+      ["hall", () => this.buildHall(surface, markings)],
+      [
+        "lights",
+        () => {
+          this.buildLights();
+          this.scene.add(this.play);
+        },
+      ],
+      ["shaders", () => this.renderer.compileAsync(this.scene, this.camera)],
+    ];
   }
 
   private buildTable(surface: THREE.Material, markings: THREE.Material): void {
@@ -483,7 +512,7 @@ export class Stage {
       rubber: new THREE.MeshStandardMaterial({ color: 0x1b1b1d, roughness: 0.95 }),
       apron: new THREE.MeshStandardMaterial({ color: 0x1d2024, roughness: 0.6, metalness: 0.4 }),
       leg: new THREE.MeshStandardMaterial({ color: 0x24272b, metalness: 0.7, roughness: 0.4 }),
-      strips: [dim(0x8a4412), dim(0x16728a)],
+      strips: [dim(dimColor(TEAM_COLORS[0], 0.54)), dim(dimColor(TEAM_COLORS[1], 0.54))],
       endStrip: dim(0x8a6a10),
     };
     const shade = new THREE.MeshStandardMaterial({ color: 0x2c3a34, metalness: 0.6, roughness: 0.45, side: THREE.DoubleSide });
@@ -616,9 +645,9 @@ export class Stage {
       this.spots.push(spot);
       this.scene.add(spot, spot.target);
     });
-    const warm = new THREE.PointLight(0xff7a1a, 3, 6, 1.5);
+    const warm = new THREE.PointLight(TEAM_COLORS[0], 3, 6, 1.5);
     warm.position.set(-1.6, -0.5, -2);
-    const cool = new THREE.PointLight(0x27d3ff, 3, 6, 1.5);
+    const cool = new THREE.PointLight(TEAM_COLORS[1], 3, 6, 1.5);
     cool.position.set(1.6, -0.5, -5.2);
     this.scene.add(warm, cool);
   }
