@@ -167,6 +167,8 @@ function checkEdges(bodies: Body[], events: PhysicsEvent[]): void {
 
 export class World {
   private acc = 0;
+  /** Each body's position one substep back, for `drawn`. */
+  private prev = new WeakMap<Body, { x: number; d: number }>();
   bodies: Body[];
   /** Sand field seed for the current shot (`sandSeed`); null slides on perfectly even wax. */
   sand: number | null;
@@ -180,6 +182,13 @@ export class World {
     this.acc = Math.min(this.acc + dt, 0.12);
     while (this.acc >= SUBSTEP) {
       this.acc -= SUBSTEP;
+      for (const b of this.bodies) {
+        const p = this.prev.get(b);
+        if (p) {
+          p.x = b.x;
+          p.d = b.d;
+        } else this.prev.set(b, { x: b.x, d: b.d });
+      }
       for (const b of this.bodies) if (b.active) integrate(b, SUBSTEP, this.sand);
       collide(this.bodies, events);
       checkEdges(this.bodies, events);
@@ -189,6 +198,20 @@ export class World {
 
   get moving(): boolean {
     return this.bodies.some(isMoving);
+  }
+
+  /**
+   * Where to draw a body this frame: between its last two substeps, by how far
+   * the leftover frame time got into the next one. Without this a frame shows
+   * 3, 4, or 5 substeps of motion depending on vsync jitter, and a sliding
+   * weight judders at any frame rate. The simulation itself is untouched.
+   * Resting bodies draw where they are, so bodies moved by hand never jump.
+   */
+  drawn(b: Body): { x: number; d: number } {
+    const p = this.prev.get(b);
+    if (!p || (b.vx === 0 && b.vd === 0)) return { x: b.x, d: b.d };
+    const k = this.acc / SUBSTEP;
+    return { x: p.x + (b.x - p.x) * k, d: p.d + (b.d - p.d) * k };
   }
 }
 

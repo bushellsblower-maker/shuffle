@@ -377,7 +377,9 @@ function startFall(w: Weight, edge: "side" | "end" | "near" | "sweep"): void {
   const b = w.body!;
   b.active = false;
   const side = Math.sign(b.x) || 1;
-  const fall: Fall = { x: b.x, y: 0, d: b.d, vx: b.vx, vy: 0, vd: b.vd, floor: GUTTER_Y, tilt: 0, landed: false };
+  // From where it was drawn, so it doesn't hop forward as it tips off.
+  const p = world.drawn(b);
+  const fall: Fall = { x: p.x, y: 0, d: p.d, vx: b.vx, vy: 0, vd: b.vd, floor: GUTTER_Y, tilt: 0, landed: false };
   if (edge === "sweep") {
     fall.vx = side * 1.6;
     fall.vy = 0.9;
@@ -1142,6 +1144,7 @@ $("btnMenu").onclick = () => {
   sound.tick();
   openMenu();
 };
+
 const soundBtn = $("btnSound");
 const syncSound = () => soundBtn.classList.toggle("muted", sound.muted);
 soundBtn.onclick = () => {
@@ -1317,12 +1320,13 @@ function update(dt: number): void {
     for (const w of weights) {
       if (w.status !== "play" || !w.body) continue;
       const b = w.body;
-      w.view.group.position.set(b.x, 0, -b.d);
+      const p = world.drawn(b);
+      w.view.group.position.set(p.x, 0, -p.d);
       const sp = Math.hypot(b.vx, b.vd);
-      if (sp > 0 || w.trail) plough(w, b.x, b.d);
+      if (sp > 0 || w.trail) plough(w, p.x, p.d);
       if (sp === 0) w.trail = undefined;
       slideSpeed += sp;
-      followD = Math.max(followD, followLead(b.d, b.vd, sp));
+      followD = Math.max(followD, followLead(p.d, b.vd, sp));
     }
     stage.setCamera("follow", followD);
   }
