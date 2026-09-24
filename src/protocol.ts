@@ -7,7 +7,7 @@
  * both browsers replay the same throw and then settle on the same positions.
  */
 import type { MatchState, ShotInput } from "./match.ts";
-import type { Team } from "./rules.ts";
+import type { End, Team } from "./rules.ts";
 
 export const MAX_NAME = 12;
 /** Rooms with no game activity for this long are closed and forgotten. */
@@ -42,7 +42,8 @@ export interface AimInput {
 
 export type ClientMsg =
   | { t: "start" }
-  | { t: "shot"; seq: number; shot: ShotInput }
+  /** `end`: the end the shooter is throwing from; the room rejects a shot for the wrong end. */
+  | { t: "shot"; seq: number; shot: ShotInput; end?: End }
   | { t: "aim"; aim: AimInput | null }
   | { t: "ready" }
   | { t: "leave" };
@@ -83,8 +84,13 @@ export function parseClientMsg(raw: string): ClientMsg | null {
     case "ready":
     case "leave":
       return { t: m.t };
-    case "shot":
-      return typeof m.seq === "number" ? ({ t: "shot", seq: m.seq, shot: m.shot } as ClientMsg) : null;
+    case "shot": {
+      if (typeof m.seq !== "number") return null;
+      const msg = { t: "shot", seq: m.seq, shot: m.shot } as Extract<ClientMsg, { t: "shot" }>;
+      if (m.end === 0 || m.end === 1) msg.end = m.end;
+      else if (m.end !== undefined) return null;
+      return msg;
+    }
     case "aim": {
       if (m.aim === null) return { t: "aim", aim: null };
       const a = m.aim as Record<string, unknown> | undefined;

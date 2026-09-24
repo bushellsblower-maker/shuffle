@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { gameBody } from "../src/history.ts";
-import { newMatchState, parseShot, shooterOf, startNextRound, throwShot, type MatchState } from "../src/match.ts";
+import { newMatchState, parseShot, shooterOf, startNextRound, throwShot, upgradeMatch, type MatchState } from "../src/match.ts";
 import {
   ROOM_IDLE_MS,
   parseClientMsg,
@@ -55,6 +55,7 @@ export class Room extends DurableObject<Env> {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     void ctx.blockConcurrencyWhile(async () => {
       this.data = (await ctx.storage.get<RoomData>("room")) ?? null;
+      if (this.data?.match) upgradeMatch(this.data.match);
     });
   }
 
@@ -176,7 +177,7 @@ export class Room extends DurableObject<Env> {
         if (!this.connected(other(seat))) return "Opponent is offline. Play resumes when they're back.";
         const shot = parseShot(msg.shot);
         if (!shot) return "Invalid shot";
-        const err = throwShot(m, seat, shot);
+        const err = throwShot(m, seat, shot, msg.end);
         if (err) return err;
         const seq = d.seq++;
         d.ready = [false, false];

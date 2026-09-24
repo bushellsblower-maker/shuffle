@@ -16,6 +16,27 @@ export const TABLE = {
 
 export type Team = 0 | 1;
 
+/**
+ * Which end of the table the shooters stand at. The board is marked the same
+ * at both ends; end 0 shoots toward the far wall, end 1 back toward end 0.
+ * Every rule and the physics work in shooter-relative (`x`, `d`); only the
+ * scene and the sand field need absolute table coordinates.
+ */
+export type End = 0 | 1;
+
+/** Rounds alternate ends, like walking to the other end of a real table. */
+export function endForRound(round: number): End {
+  return (Math.max(0, Math.floor(round) - 1) % 2) as End;
+}
+
+/**
+ * Shooter-relative → absolute table coordinates (end 0's frame). The map is a
+ * half turn about the table centre, so it is its own inverse.
+ */
+export function toTable(end: End, x: number, d: number): { x: number; d: number } {
+  return end === 0 ? { x, d } : { x: -x, d: TABLE.length - d };
+}
+
 export interface RestingWeight {
   team: Team;
   x: number;

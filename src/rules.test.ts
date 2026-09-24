@@ -2,17 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   TABLE,
+  endForRound,
   isLive,
   isHanger,
   matchWinner,
   nextFirstShooter,
   scoreRound,
   shooterFor,
+  toTable,
   weightValue,
   zoneOf,
+  type End,
   type RestingWeight,
 } from "./rules.ts";
-import { World, slideDistance, speedForDistance } from "./physics.ts";
+import { FRICTION, SAND, WOOD_FRICTION, World, sandAt, sandSeed, slideDistance, speedForDistance, type Body } from "./physics.ts";
 
 const R = TABLE.puckRadius;
 const [, Z2, Z3, Z4] = TABLE.zones;
@@ -72,6 +75,69 @@ test("turn order and match end", () => {
   assert.equal(matchWinner([21, 12], 21), 0);
   assert.equal(matchWinner([14, 16], 15), 1);
   assert.equal(matchWinner([10, 12], 15), null);
+});
+
+test("ends alternate every round and map onto the table by a half turn", () => {
+  assert.deepEqual([1, 2, 3, 4, 5].map(endForRound), [0, 1, 0, 1, 0]);
+  assert.deepEqual(toTable(0, 0.2, 1.5), { x: 0.2, d: 1.5 });
+  assert.deepEqual(toTable(1, 0.2, 1.5), { x: -0.2, d: TABLE.length - 1.5 });
+  for (const end of [0, 1] as End[]) {
+    const a = toTable(end, -0.31, 6.4);
+    const back = toTable(end, a.x, a.d);
+    assert.ok(Math.abs(back.x + 0.31) < 1e-12 && Math.abs(back.d - 6.4) < 1e-12, "the map is its own inverse");
+  }
+});
+
+test("only the end being shot toward scores", () => {
+  // Weights placed in absolute table coordinates (end 0's frame), near absolute d = 0.
+  const nearEnd = [
+    { team: 0 as const, x: 0.1, d: R / 2 }, // hangs over the end-0 edge
+    { team: 1 as const, x: -0.1, d: TABLE.length - Z3 - R - 0.05 }, // in end 0's zone 3 (mirrored)
+  ];
+  const shooting = (end: End) => scoreRound(nearEnd.map((w) => ({ team: w.team, ...toTable(end, w.x, w.d) })));
+  const fromEnd1 = shooting(1);
+  assert.equal(fromEnd1.team, 0, "shooting from end 1, the near-end zones are the far zones");
+  assert.equal(fromEnd1.points, 5, "a zone-4 hanger at that end");
+  assert.deepEqual(shooting(0), { team: null, points: 0, counted: [] }, "shooting from end 0 those weights are short of the foul line");
+});
+
+test("sand: slides go a bit further than bare wood, steer without adding speed, and stay subtle", () => {
+  assert.ok(FRICTION < WOOD_FRICTION && SAND.glide > 0.85, "sand helps weights slide, gently");
+  const v = speedForDistance(6.6 - TABLE.launchD);
+  const xs: number[] = [];
+  const ds: number[] = [];
+  for (let i = 0; i < 120; i++) {
+    const b: Body = { x: 0, d: TABLE.launchD, vx: 0, vd: v, active: true };
+    const world = new World([b], sandSeed(31 + i, 1 + (i % 7), i % 8));
+    let last = v;
+    for (let t = 0; t < 4000 && world.moving; t++) {
+      world.step(1 / 60);
+      const sp = Math.hypot(b.vx, b.vd);
+      assert.ok(sp <= last + 1e-9, "sand never speeds a weight up");
+      last = sp;
+    }
+    xs.push(b.x);
+    ds.push(b.d);
+  }
+  const mean = (a: number[]) => a.reduce((s, n) => s + n, 0) / a.length;
+  const sd = (a: number[]) => Math.sqrt(mean(a.map((n) => (n - mean(a)) ** 2)));
+  assert.ok(sd(xs) > 0.005 && sd(xs) < 0.04, `sideways spread ${sd(xs).toFixed(3)} m`);
+  assert.ok(sd(ds) > 0.01 && sd(ds) < 0.07, `distance spread ${sd(ds).toFixed(3)} m`);
+  assert.ok(Math.abs(mean(ds) - 6.6) < 0.03, `on average it still stops where the power says (${mean(ds).toFixed(3)})`);
+  assert.ok(Math.max(...xs.map(Math.abs)) < 0.1, "never enough to steer a centre shot into the gutter");
+});
+
+test("sand field is smooth, bounded, and seeded", () => {
+  let jump = 0;
+  for (let d = 0; d < TABLE.length; d += 0.01) {
+    const a = sandAt(3, 0.1, d);
+    const b = sandAt(3, 0.1, d + 0.01);
+    assert.ok(Math.abs(a.drift) <= 1 && Math.abs(a.grip) <= 1);
+    jump = Math.max(jump, Math.abs(a.drift - b.drift), Math.abs(a.grip - b.grip));
+  }
+  assert.ok(jump < 0.15, `no steps in the field (${jump.toFixed(3)})`);
+  assert.notDeepEqual(sandAt(3, 0.1, 2), sandAt(4, 0.1, 2));
+  assert.deepEqual(sandAt(3, 0.1, 2), sandAt(3, 0.1, 2));
 });
 
 test("physics: speedForDistance inverts slideDistance and weights exchange momentum", () => {
