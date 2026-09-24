@@ -17,6 +17,7 @@ Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 - **Sand.** The table is dusted with shuffleboard sand. It makes weights glide a touch further and nudges each slide slightly, so two identical flicks won't land in exactly the same spot. Sliding weights plough tracks through the beads, and each round starts with fresh sand.
 - Modes: **Pass & play** (two players, one device), **vs CPU**, or **Online** (two devices). Names, target (15 or 21), and mode are saved on the device.
 - **Scoreboard** (menu, or the match-over card): wins leaderboard and recent games from the shared SHUFL database.
+- **View** (eye button on the menu, before a match): hides the menu and hands you the camera to look round the hall. One finger or a mouse drag orbits, pinch or the wheel zooms, two fingers or a right-drag pans. **MENU** (top right) or Esc goes back. An online match that starts while you are looking round takes the camera back.
 
 ## Online play
 
@@ -73,6 +74,11 @@ The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`. 
 | `SWAP.radius` / `SWAP.height` | `src/swap.ts` | `4.6` m / `3.0` m | How wide and how high the camera swings (it stays in the aisle between tables). |
 | `SWAP.swing` | `src/swap.ts` | `1.2` rad | How far round to the side of the table the camera goes. |
 | `SWAP.houseLights` / `SWAP.fogPush` | `src/swap.ts` | `0.75` / `11` m | House lights up and fog pushed back mid-flight, so the hall reads. |
+| `CAMERA.followSmooth` | `src/rig.ts` | `0.3` s | Smooth time of the critically damped spring chasing a sliding weight's look-ahead point. Lower sticks tighter, higher floats. |
+| `CAMERA.engage` | `src/rig.ts` | `0.6` s | How long the look-ahead takes to ramp in after the throw, so the camera pulls away from the aim view instead of lurching. |
+| `CAMERA.blend.<mode>` | `src/rig.ts` | see file | Switching into a mode eases out the old view over `base + perMetre × distance` seconds (capped at `max`), with no jump in speed or acceleration at either end. `look` scales the look point's time: under 1 turns first (follow), over 1 keeps looking down the table while the camera pulls back (aim). |
+| `CAMERA.blendPerSpeed` | `src/rig.ts` | `0.07` s per m/s | Extra blend time when the camera is already moving (a throw during the return), so it turns round gently. |
+| `ROAM` | `src/rig.ts` | see file | Free-roam limits: the box the camera and its pivot stay in, zoom range, and how low it can orbit. |
 
 With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 4 cm in length of where it would on perfectly even wax (one standard deviation). `src/rules.test.ts` fails if that spread grows past 4 cm sideways or 7 cm in length. Set `drift` and `grip` to 0 for a perfectly predictable table.
 
@@ -99,7 +105,7 @@ Requires Node 22.12 or newer.
 ```bash
 npm install
 npm run dev          # Vite on http://localhost:5173: local and CPU play (no API)
-npm test             # rules, ends, sand physics, match engine / sync, camera paths, room codes, history validation
+npm test             # rules, ends, sand physics, match engine / sync, camera feel, room codes, history validation
 npm run build        # type-check (app + Worker), then write static assets to dist/
 ```
 
@@ -116,14 +122,15 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | File | Role |
 | --- | --- |
 | `src/rules.ts` | Table geometry, zone values, hangers, round scoring, turn order |
-| `src/physics.ts` | Custom 2D slide physics: Coulomb friction plus drag, a seeded sand field (glide, drift, grip), weight-to-weight collisions, edge falls. Fixed 240 Hz substeps. |
+| `src/physics.ts` | Custom 2D slide physics: Coulomb friction plus drag, a seeded sand field (glide, drift, grip), weight-to-weight collisions, edge falls. Fixed 240 Hz substeps; `World.drawn` interpolates between the last two so sliding weights move evenly at any frame rate. |
 | `src/match.ts` | Pure match engine (shot → rest → sweep → score → next round), shared by the browser and the room |
 | `src/protocol.ts`, `src/room-code.ts` | Online message types and parsing; room codes and seat tokens |
 | `src/online.ts` | Browser room client: create/join, WebSocket with keepalive, reconnect, and room-gone detection |
-| `src/scene.ts` | Three.js scene: maple table marked at both ends, pits at both ends, instanced sand beads that weights plough aside, the hall (a shuffleboard either side, pool tables beyond, baked into a few draw calls), lamps, "Everyday I'm Shuffling" neon, chrome weights, camera rig that turns with the active end, HEAD inset |
-| `src/smooth.ts` | Follow-camera maths: a look-ahead target toward where the weight will stop, a critically damped spring, and soft clamps at the far end |
+| `src/scene.ts` | Three.js scene: maple table marked at both ends, pits at both ends, instanced sand beads that weights plough aside, the hall (a shuffleboard either side, pool tables beyond, baked into a few draw calls), lamps, "Everyday I'm Shuffling" neon, chrome weights, HEAD inset, free-roam controls |
+| `src/rig.ts` | Camera rig (pure maths, tested in `src/camera.test.ts`): aim, follow, HEAD, and overview views, blends between them that keep the camera's velocity, the end swap, reflections that turn with the end, and free-roam limits |
+| `src/smooth.ts` | Camera maths: a look-ahead target toward where the weight will stop, an exactly solved critically damped spring, a quintic ease-out for blends, and soft clamps at the far end |
 | `src/swap.ts` | End-swap camera path between rounds (pure maths, tested in `src/camera.test.ts`) |
-| `src/textures.ts` | Canvas-generated textures (table, concrete, aim arrow). No image assets. |
+| `src/textures.ts` | Canvas-generated textures (table, matte zone markings, concrete, aim arrow). No image assets. |
 | `src/main.ts` | Match and round state machine, online settle and resync, pull-back and flick input, fall animations, HUD, menu, waiting room |
 | `src/scoreboard.ts`, `src/history.ts` | Scoreboard panel; SHUFL-shaped game records |
 | `src/ai.ts` | CPU opponent. It either draws to the 3 or 4 zone or knocks off your leading weight, with some aim and power noise. |

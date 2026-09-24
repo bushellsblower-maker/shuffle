@@ -32,6 +32,8 @@ export interface SwapPose {
   look: Vec3;
   /** 0 at the ends of the move, 1 at the top of the arc; drives house lights and fog. */
   reveal: number;
+  /** 0..1 eased progress from `from` to `to`, zero-slope at both ends; drives anything that turns with the end. */
+  progress: number;
 }
 
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
@@ -71,5 +73,5 @@ export function swapPose(
     y: lerp(lerp(from.look.y, to.look.y, e), hall.y, reveal),
     z: lerp(lerp(from.look.z, to.look.z, e), hall.z, reveal),
   };
-  return { pos: { x: centre.x + Math.sin(a) * r, y, z: centre.z + Math.cos(a) * r }, look, reveal };
+  return { pos: { x: centre.x + Math.sin(a) * r, y, z: centre.z + Math.cos(a) * r }, look, reveal, progress: e };
 }

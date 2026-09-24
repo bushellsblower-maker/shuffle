@@ -22,21 +22,36 @@ export interface Spring {
 }
 
 /**
- * Critically damped spring toward `target` (Game Programming Gems 4 "SmoothDamp").
- * Stable for any frame time and never overshoots a target it is closing on.
+ * Critically damped spring toward `target`, solved exactly for a target held
+ * over the step, so it traces the same path at any frame rate. Position and
+ * velocity stay continuous; from rest it never overshoots.
  */
 export function smoothDamp(s: Spring, target: number, smoothTime: number, dt: number): void {
-  const omega = 2 / smoothTime;
-  const x = omega * dt;
-  const decay = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
-  const change = s.value - target;
-  const temp = (s.vel + omega * change) * dt;
-  let next = target + (change + temp) * decay;
-  let vel = (s.vel - omega * temp) * decay;
-  if (target - s.value > 0 === next > target) {
-    next = target;
-    vel = 0;
-  }
-  s.value = next;
-  s.vel = vel;
+  const w = 2 / smoothTime;
+  const c1 = s.value - target;
+  const c2 = s.vel + w * c1;
+  const e = Math.exp(-w * dt);
+  s.value = target + (c1 + c2 * dt) * e;
+  s.vel = (c2 - w * (c1 + c2 * dt)) * e;
+}
+
+/** 0 → 1 over u = 0..1 with zero slope and curvature at both ends (quintic smootherstep). */
+export function smootherstep(u: number): number {
+  const k = Math.min(1, Math.max(0, u));
+  return k * k * k * (k * (k * 6 - 15) + 10);
+}
+
+/**
+ * What is left at time `t` of an offset that starts at `p0` moving at `v0` and
+ * eases to rest at 0 after `dur` (quintic Hermite). Position, velocity, and
+ * acceleration are all continuous at both ends, so a camera blended with it
+ * never kicks when a move starts or stops. Closed form in `t`: frame-rate independent.
+ */
+export function easeOffset(p0: number, v0: number, t: number, dur: number): number {
+  if (t >= dur) return 0;
+  const u = Math.max(0, t) / dur;
+  const u3 = u * u * u;
+  const u4 = u3 * u;
+  const u5 = u4 * u;
+  return p0 * (1 - 10 * u3 + 15 * u4 - 6 * u5) + v0 * dur * (u - 6 * u3 + 8 * u4 - 3 * u5);
 }

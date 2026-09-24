@@ -1,10 +1,11 @@
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { TABLE, toTable, type End, type Team } from "./rules.ts";
-import { smoothDamp, smoothMin, type Spring } from "./smooth.ts";
-import { SWAP, swapPose } from "./swap.ts";
-import { aimTexture, concreteTexture, feltTexture, glowTexture, neonTexture, tableTexture } from "./textures.ts";
+import { CENTRE, CameraRig, ROAM, clampRoam, toWorld, type CameraMode } from "./rig.ts";
+import { SWAP } from "./swap.ts";
+import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
 export const TEAM_COLORS = ["#ff7a1a", "#27d3ff"] as const;
 /** Neon on both end walls. Split over two lines so it stays big enough to read on a phone. */
@@ -22,8 +23,6 @@ const FULL_W = W + 2 * (GUTTER_W + RAIL_W);
 const FLOOR_Y = -0.92;
 /** Lamp fixtures render in the main view only, never in the top-down head cam. */
 const LAMP_LAYER = 1;
-/** Follow-cam spring time (s). Paired with the look-ahead in main.ts, which cancels most of its lag. */
-export const FOLLOW_SMOOTH = 0.26;
 
 /** The hall around the active table (metres, world frame; the active table runs z = 0 → -L). */
 const HALL = {
@@ -35,16 +34,15 @@ const HALL = {
   pool: 5.6,
   poolZ: [2.2, -2.2],
 } as const;
-const CENTRE = { x: 0, y: 0, z: -L / 2 };
 const HEMI = 0.35;
+const ENV_INTENSITY = 0.35;
+const EXPOSURE = 1.05;
 const FOG_NEAR = 7;
 const FOG_FAR = 18;
 
 /** Sand beads drawn on the table. Visual only; the physics has its own field (`SAND` in physics.ts). */
 const SAND_GRAINS = 2200;
 const SAND_BUCKET = 0.1;
-
-export type CameraMode = "aim" | "follow" | "head" | "overview";
 
 export interface Rect {
   x: number;
@@ -61,6 +59,7 @@ export interface PuckView {
 
 interface TableMats {
   surface: THREE.Material;
+  markings: THREE.Material;
   edgeWood: THREE.Material;
   steel: THREE.Material;
   dark: THREE.Material;
@@ -93,6 +92,12 @@ function buildShuffleboard(t: THREE.Object3D, m: TableMats, x0: number): void {
   surface.rotation.x = -Math.PI / 2;
   surface.position.set(x0, 0, -L / 2);
   t.add(surface);
+  const marks = new THREE.Mesh(surface.geometry, m.markings);
+  marks.rotation.x = -Math.PI / 2;
+  marks.position.set(x0, 0.0004, -L / 2);
+  // Over the surface's clear coat but under the aim guide and lamp glow.
+  marks.renderOrder = -1;
+  t.add(marks);
 
   t.add(box(W, 0.08, L, m.edgeWood, x0, -0.041, -L / 2));
   const outerX = W / 2 + GUTTER_W + RAIL_W / 2;
@@ -126,9 +131,11 @@ function buildShuffleboard(t: THREE.Object3D, m: TableMats, x0: number): void {
 function bake(group: THREE.Group): THREE.Mesh[] {
   group.updateMatrixWorld(true);
   const byMat = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  const order = new Map<THREE.Material, number>();
   group.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return;
     const mat = o.material as THREE.Material;
+    order.set(mat, o.renderOrder);
     const g = (o.geometry as THREE.BufferGeometry).clone().applyMatrix4(o.matrixWorld);
     const list = byMat.get(mat) ?? [];
     list.push(g);
@@ -143,17 +150,11 @@ function bake(group: THREE.Group): THREE.Mesh[] {
     if (!merged) return;
     const mesh = new THREE.Mesh(merged, mat);
     mesh.receiveShadow = true;
+    mesh.renderOrder = order.get(mat) ?? 0;
     mesh.matrixAutoUpdate = false;
     out.push(mesh);
   });
   return out;
-}
-
-interface Swap {
-  t: number;
-  from: { pos: THREE.Vector3; look: THREE.Vector3 };
-  hall: { x: number; y: number; z: number };
-  side: 1 | -1;
 }
 
 export class Stage {
@@ -171,24 +172,10 @@ export class Stage {
   inset: Rect | null = null;
 
   private endNow: End = 0;
-  private mode: CameraMode = "overview";
-  /** Follow cam: where the caller wants to look (`focusTarget`), and the spring-smoothed value used. */
-  private focusTarget: number = TABLE.launchD;
-  private focus: Spring = { value: TABLE.launchD, vel: 0 };
-  private camPos = new THREE.Vector3(0, 3, 4);
-  private camLook = new THREE.Vector3(0, 0, -3);
-  private wantPos = new THREE.Vector3();
-  private wantLook = new THREE.Vector3();
-  /**
-   * Mode changes ease out an offset from the new shot instead of lerping toward
-   * a moving target, so the follow cam tracks with no lag once blended in.
-   */
-  private posOff = new THREE.Vector3();
-  private lookOff = new THREE.Vector3();
-  private blendRate = 3;
-  private swap: Swap | null = null;
-  /** 0..1: how far the house lights are up for the end-swap fly-around. */
-  private reveal = 0;
+  /** Every scripted camera move; see `CAMERA` in rig.ts for the feel knobs. */
+  private rig = new CameraRig();
+  /** Free-roam controls while the menu's View is open. */
+  private roam: OrbitControls | null = null;
   private time = 0;
   private neon: THREE.MeshBasicMaterial[] = [];
   private tmp = new THREE.Vector3();
@@ -209,14 +196,14 @@ export class Stage {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = EXPOSURE;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    this.scene.environmentIntensity = 0.35;
+    this.scene.environmentIntensity = ENV_INTENSITY;
     this.scene.background = new THREE.Color(0x0a0b0e);
     this.scene.fog = this.fog;
 
@@ -225,16 +212,28 @@ export class Stage {
     this.camera.layers.enable(LAMP_LAYER);
     this.aimHeadCam();
 
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
     const surface = new THREE.MeshPhysicalMaterial({
-      map: tableTexture(this.renderer.capabilities.getMaxAnisotropy()),
+      map: tableTexture(aniso),
       roughness: 0.32,
       clearcoat: 1,
       clearcoatRoughness: 0.12,
     });
-    this.buildTable(surface);
+    // Matte paint over the clear coat: the lamps and room still gleam on the wood, but not on the lines.
+    const markings = new THREE.MeshStandardMaterial({
+      map: markingsTexture(aniso),
+      roughness: 0.9,
+      metalness: 0,
+      transparent: true,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    this.buildTable(surface, markings);
     this.buildSand();
     this.buildRoom();
-    this.buildHall(surface);
+    this.buildHall(surface, markings);
     this.buildLights();
     this.scene.add(this.play);
 
@@ -253,11 +252,12 @@ export class Stage {
     this.play.add(this.aim);
   }
 
-  private buildTable(surface: THREE.Material): void {
+  private buildTable(surface: THREE.Material, markings: THREE.Material): void {
     const t = this.table;
     this.scene.add(t);
     buildShuffleboard(t, {
       surface,
+      markings,
       edgeWood: new THREE.MeshStandardMaterial({ color: 0x5a3a1c, roughness: 0.55 }),
       steel: new THREE.MeshStandardMaterial({ color: 0x3a3f45, metalness: 0.85, roughness: 0.45 }),
       dark: new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.7, metalness: 0.2 }),
@@ -445,12 +445,13 @@ export class Stage {
   }
 
   /** The rest of the room: a shuffleboard either side and a row of pool tables beyond each, all static and baked. */
-  private buildHall(surface: THREE.Material): void {
+  private buildHall(surface: THREE.Material, markings: THREE.Material): void {
     const hall = new THREE.Group();
     const rand = rng(29);
     const dim = (hex: number) => new THREE.MeshBasicMaterial({ color: hex });
     const tableMats: TableMats = {
       surface,
+      markings,
       edgeWood: new THREE.MeshStandardMaterial({ color: 0x5a3a1c, roughness: 0.6 }),
       steel: new THREE.MeshStandardMaterial({ color: 0x3a3f45, metalness: 0.8, roughness: 0.5 }),
       dark: new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.75 }),
@@ -655,7 +656,7 @@ export class Stage {
 
   /** True while the end-swap fly-around is playing. */
   get swapping(): boolean {
-    return this.swap !== null;
+    return this.rig.swapping;
   }
 
   /**
@@ -664,24 +665,11 @@ export class Stage {
    */
   setEnd(end: End, animate = false): void {
     if (end === this.endNow) return;
-    const from = { pos: this.camPos.clone(), look: this.camLook.clone() };
     this.endNow = end;
     this.play.rotation.y = end === 1 ? Math.PI : 0;
     this.play.position.z = end === 1 ? -L : 0;
     this.aimHeadCam();
-    this.computeWanted();
-    if (!animate) {
-      this.swap = null;
-      this.posOff.subVectors(this.camPos, this.wantPos);
-      this.lookOff.subVectors(this.camLook, this.wantLook);
-      this.blendRate = 3;
-      return;
-    }
-    // Alternate which side of the hall the camera swings out over.
-    const camSide = end === 1 ? -1 : 1;
-    const startAngle = Math.atan2(from.pos.x - CENTRE.x, from.pos.z - CENTRE.z);
-    const side = (Math.cos(startAngle) >= 0 ? camSide : -camSide) as 1 | -1;
-    this.swap = { t: 0, from, hall: { x: -camSide * 2.2, y: -0.45, z: CENTRE.z }, side };
+    this.rig.setEnd(end, animate);
   }
 
   private aimHeadCam(): void {
@@ -696,69 +684,54 @@ export class Stage {
     return this.endNow === 1 ? -L - z : z;
   }
 
-  private toWorld(v: THREE.Vector3): THREE.Vector3 {
-    if (this.endNow === 1) {
-      v.x = -v.x;
-      v.z = -L - v.z;
-    }
-    return v;
-  }
-
   setCamera(mode: CameraMode, followD?: number): void {
-    if (followD !== undefined) this.focusTarget = followD;
-    if (mode === this.mode) return;
-    if (mode === "follow") {
-      this.focus = { value: this.focusTarget, vel: 0 };
-      // A shot mid fly-around cuts it short; the normal blend takes the camera from wherever it is.
-      this.swap = null;
-    }
-    this.mode = mode;
-    this.computeWanted();
-    this.posOff.subVectors(this.camPos, this.wantPos);
-    this.lookOff.subVectors(this.camLook, this.wantLook);
-    this.blendRate = mode === "follow" ? 6 : 3;
+    this.rig.setMode(mode, followD);
   }
 
   snapCamera(): void {
-    this.swap = null;
-    this.computeWanted();
-    this.camPos.copy(this.wantPos);
-    this.camLook.copy(this.wantLook);
-    this.posOff.set(0, 0, 0);
-    this.lookOff.set(0, 0, 0);
+    this.rig.snap();
   }
 
-  /** Wanted camera pose for the current mode, in world space. */
-  private computeWanted(): void {
-    const portrait = this.camera.aspect < 0.8;
-    switch (this.mode) {
-      case "aim":
-        if (portrait) {
-          this.wantPos.set(0, 1.3, 1.55);
-          this.wantLook.set(0, 0, -2.9);
-        } else {
-          this.wantPos.set(0, 1.25, 1.8);
-          this.wantLook.set(0, 0, -3.1);
-        }
-        break;
-      case "follow": {
-        // Soft limits: a hard min() makes the camera stop dead and kinks its pitch near the far end.
-        const d = smoothMin(this.focus.value, L - 1.2, 0.3);
-        this.wantPos.set(0, portrait ? 1.15 : 0.85, -d + (portrait ? 2.1 : 1.8));
-        this.wantLook.set(0, 0, -smoothMin(d + 2.6, L, 0.35));
-        break;
-      }
-      case "head":
-        this.wantPos.set(0, portrait ? 1.9 : 1.3, -L + 2.0);
-        this.wantLook.set(0, 0, -L + (portrait ? 1.0 : 0.95));
-        break;
-      case "overview":
-        this.wantPos.set(Math.sin(this.time * 0.15) * 1.6, 2.2, 1.2 + Math.cos(this.time * 0.15) * 0.8);
-        this.wantLook.set(0, 0, -4.2);
-        break;
-    }
-    this.toWorld(this.wantPos);
-    this.toWorld(this.wantLook);
+  /* ---------- free roam ---------- */
+
+  get roaming(): boolean {
+    return this.roam !== null;
+  }
+
+  /**
+   * Hand the camera to the player: one finger (or mouse drag) orbits, pinch or
+   * wheel zooms, two fingers (or right drag) pan. Starts from the current view.
+   */
+  startRoam(): void {
+    if (this.roam) return;
+    const c = new OrbitControls(this.camera, this.renderer.domElement);
+    c.enableDamping = true;
+    c.dampingFactor = 0.09;
+    c.rotateSpeed = 0.7;
+    c.zoomSpeed = 0.8;
+    c.panSpeed = 0.8;
+    c.minDistance = ROAM.minDistance;
+    c.maxDistance = ROAM.maxDistance;
+    c.maxPolarAngle = ROAM.maxPolar;
+    c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    const { pos, look } = this.rig;
+    this.camera.position.set(pos.x, pos.y, pos.z);
+    // Orbit round the middle of the view, a few metres out, so the first drag swings round the hall rather than spinning in place.
+    const dir = new THREE.Vector3(look.x - pos.x, look.y - pos.y, look.z - pos.z);
+    const reach = Math.min(Math.max(dir.length(), 3), 5);
+    c.target.copy(this.camera.position).addScaledVector(dir.normalize(), reach);
+    clampRoam(this.camera.position, c.target);
+    c.update();
+    this.rig.hold();
+    this.roam = c;
+  }
+
+  /** Give the camera back; it blends from wherever the player left it to the current mode's view. */
+  stopRoam(): void {
+    if (!this.roam) return;
+    this.roam.dispose();
+    this.roam = null;
+    this.rig.release();
   }
 
   resize(): void {
@@ -768,11 +741,12 @@ export class Stage {
     this.camera.aspect = w / h;
     this.camera.fov = w / h < 0.8 ? 58 : 44;
     this.camera.updateProjectionMatrix();
+    this.rig.portrait = w / h < 0.8;
   }
 
   /** Screen position of a shooter-relative point. */
   toScreen(x: number, y: number, d: number): { x: number; y: number } {
-    this.toWorld(this.tmp.set(x, y, -d)).project(this.camera);
+    toWorld(this.endNow, this.tmp.set(x, y, -d)).project(this.camera);
     return { x: ((this.tmp.x + 1) / 2) * window.innerWidth, y: ((1 - this.tmp.y) / 2) * window.innerHeight };
   }
 
@@ -788,35 +762,25 @@ export class Stage {
 
   render(dt: number): void {
     this.time += dt;
-    if (this.mode === "follow") smoothDamp(this.focus, this.focusTarget, FOLLOW_SMOOTH, dt);
-    this.computeWanted();
-    if (this.swap) {
-      const sw = this.swap;
-      sw.t += dt;
-      const pose = swapPose(sw.t / SWAP.duration, sw.from, { pos: this.wantPos, look: this.wantLook }, CENTRE, sw.hall, sw.side);
-      this.camPos.set(pose.pos.x, pose.pos.y, pose.pos.z);
-      this.camLook.set(pose.look.x, pose.look.y, pose.look.z);
-      this.reveal = pose.reveal;
-      if (sw.t >= SWAP.duration) {
-        this.swap = null;
-        this.posOff.set(0, 0, 0);
-        this.lookOff.set(0, 0, 0);
-      }
+    const rig = this.rig;
+    rig.update(dt);
+    if (this.roam) {
+      this.roam.update(dt);
+      clampRoam(this.camera.position, this.roam.target);
+      this.camera.lookAt(this.roam.target);
+      rig.track(this.camera.position, this.roam.target, dt);
     } else {
-      const keep = Math.exp(-dt * this.blendRate);
-      this.posOff.multiplyScalar(keep);
-      this.lookOff.multiplyScalar(keep);
-      this.camPos.addVectors(this.wantPos, this.posOff);
-      this.camLook.addVectors(this.wantLook, this.lookOff);
-      this.reveal *= Math.exp(-dt * 4);
+      this.camera.position.set(rig.pos.x, rig.pos.y, rig.pos.z);
+      this.camera.lookAt(rig.look.x, rig.look.y, rig.look.z);
     }
-    this.camera.position.copy(this.camPos);
-    this.camera.lookAt(this.camLook);
+    // RoomEnvironment is lopsided (its biggest softbox is on +z), so the reflections turn with the end;
+    // otherwise end 1 looks straight into that softbox's glare on the clear coat.
+    this.scene.environmentRotation.y = rig.envYaw.value;
 
-    const hemi = HEMI + SWAP.houseLights * this.reveal;
+    const hemi = HEMI + SWAP.houseLights * rig.reveal;
     this.hemi.intensity = hemi;
-    this.fog.near = FOG_NEAR + SWAP.fogPush * this.reveal;
-    this.fog.far = FOG_FAR + SWAP.fogPush * 1.4 * this.reveal;
+    this.fog.near = FOG_NEAR + SWAP.fogPush * rig.reveal;
+    this.fog.far = FOG_FAR + SWAP.fogPush * 1.4 * rig.reveal;
 
     const flicker = 0.92 + 0.08 * Math.sin(this.time * 2.3) * Math.sin(this.time * 7.1);
     this.neon.forEach((m) => (m.opacity = flicker));
@@ -829,7 +793,7 @@ export class Stage {
     r.setViewport(0, 0, w, h);
     r.render(this.scene, this.camera);
 
-    if (this.inset && this.mode !== "head" && !this.swap) {
+    if (this.inset && rig.mode !== "head" && !rig.swapping && !this.roam) {
       const { x, y, w: iw, h: ih } = this.inset;
       const halfH = 1.6;
       const halfW = (halfH * iw) / ih;
@@ -850,10 +814,10 @@ export class Stage {
       r.setViewport(x, h - y - ih, iw, ih);
       r.render(this.scene, this.headCam);
       this.scene.fog = this.fog;
-      r.toneMappingExposure = 1.05;
+      r.toneMappingExposure = EXPOSURE;
       this.spots.forEach((s) => (s.intensity = s.userData.base));
       this.hemi.intensity = hemi;
-      this.scene.environmentIntensity = 0.35;
+      this.scene.environmentIntensity = ENV_INTENSITY;
       r.setScissorTest(false);
     }
   }

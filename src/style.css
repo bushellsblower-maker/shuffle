@@ -629,12 +629,129 @@ button:disabled {
   transform: none;
 }
 
+.panel > .actions {
+  flex-wrap: wrap;
+}
+
 .panel > .actions .ghost {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 42px;
-  padding: 0 4px;
+  padding: 0 8px;
   font-size: 12px;
   letter-spacing: 0.05em;
+}
+
+.view {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.view svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---------- Free roam ---------- */
+
+body.roaming #hud > :not(.roam) {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.roam {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s, visibility 0.3s;
+}
+
+.roam.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+.roamexit {
+  position: absolute;
+  top: calc(var(--safe-t) + 12px);
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 14px 0 10px;
+  font-family: var(--font);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  color: #e8e8e8;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.roamexit svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+}
+
+.roamhint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--safe-b) + 24px);
+  max-width: calc(100vw - 24px);
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: center;
+  color: #e8e8e8;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.roam.show .roamhint {
+  animation: roamhint 5s forwards;
+}
+
+@keyframes roamhint {
+  0%,
+  75% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.roamhint .mouse {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .roamhint .touch {
+    display: none;
+  }
+  .roamhint .mouse {
+    display: inline;
+  }
 }
 
 .card .actions:has(> :nth-child(3)) button {
