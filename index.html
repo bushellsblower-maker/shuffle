@@ -8,8 +8,74 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>SHUFFLE · 3D table shuffleboard</title>
+    <!-- Inline so the loading overlay is styled on first paint, before the bundle (and style.css) arrive. -->
+    <style>
+      html {
+        background: #0a0b0e;
+      }
+      .loading {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        padding: calc(env(safe-area-inset-top, 0px) + 24px) 24px calc(env(safe-area-inset-bottom, 0px) + 24px);
+        background: radial-gradient(ellipse at 50% 40%, #16181d, #0a0b0e 70%);
+        color: #f2f2f2;
+        font-family: "Arial Black", "Helvetica Neue", Impact, system-ui, sans-serif;
+        transition: opacity 0.4s, visibility 0.4s;
+      }
+      .loading.done {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .loading .mark {
+        font-size: clamp(40px, 13vw, 56px);
+        font-style: italic;
+        line-height: 0.9;
+        letter-spacing: 0.02em;
+        background: linear-gradient(180deg, #fff 0%, #ffd6b0 45%, #ff7a1a 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        filter: drop-shadow(0 0 16px rgba(255, 122, 26, 0.45));
+      }
+      .loading p {
+        margin: 0;
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 13px;
+        letter-spacing: 0.04em;
+        color: #c9ced4;
+      }
+      .loading .track {
+        width: min(72vw, 280px);
+        height: 12px;
+        padding: 2px;
+        background: rgba(10, 11, 14, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .loading .fill {
+        height: 100%;
+        background: linear-gradient(90deg, #ffc21a, #fff);
+        box-shadow: 0 0 12px #ffc21a;
+        transform: scaleX(0);
+        transform-origin: left;
+        transition: transform 0.25s ease-out;
+      }
+    </style>
   </head>
   <body>
+    <div id="loading" class="loading">
+      <div class="mark" aria-hidden="true">SHUFFLE</div>
+      <p id="loadingText">Waxing the table...</p>
+      <div class="track" role="progressbar" aria-labelledby="loadingText" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="fill"></div></div>
+    </div>
     <canvas id="c"></canvas>
     <div id="hud">
       <header class="bar">
