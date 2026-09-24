@@ -70,15 +70,17 @@ export function tableTexture(maxAnisotropy: number): THREE.CanvasTexture {
   }
 
   // Sand dust: fine pale specks, heaviest down the middle of the lane.
-  for (let i = 0; i < 26000; i++) {
+  const dust = ["rgb(255,248,230)", "rgb(200,180,140)"];
+  for (let i = 0; i < SURFACE.dustSpecks; i++) {
     const across = Math.max(-1, Math.min(1, (rand() + rand() + rand() - 1.5) * 0.9));
     const x = W / 2 + across * (W / 2);
     const y = rand() * H;
-    const a = span(SURFACE.dustAlpha);
-    g.fillStyle = rand() < 0.7 ? `rgba(255,248,230,${a})` : `rgba(200,180,140,${a})`;
-    const s = rand() < 0.85 ? 1 : 2;
+    g.globalAlpha = span(SURFACE.dustAlpha);
+    g.fillStyle = dust[rand() < 0.7 ? 0 : 1];
+    const s = rand() < SURFACE.dustCoarse ? 2 : 1;
     g.fillRect(x, y, s, s);
   }
+  g.globalAlpha = 1;
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
