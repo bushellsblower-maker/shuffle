@@ -13,6 +13,8 @@ Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 - **Flick** forward instead of pulling back if you prefer. Flick speed sets the power.
 - The **power meter** on the left shows this shot. The white tick marks your side's last shot.
 - The **HEAD** inset on the right is a top-down view of the scoring end, so you can see the far zones while you aim.
+- **Ends switch every round.** Both ends of the table are marked. Round 1 shoots from end 0 toward the far wall, round 2 from the far end back, and so on. Between rounds the camera flies out over the hall (other shuffleboards, pool tables) and lands behind the new end.
+- **Sand.** The table is dusted with shuffleboard sand. It makes weights glide a touch further and nudges each slide slightly, so two identical flicks won't land in exactly the same spot. Sliding weights plough tracks through the beads, and each round starts with fresh sand.
 - Modes: **Pass & play** (two players, one device), **vs CPU**, or **Online** (two devices). Names, target (15 or 21), and mode are saved on the device.
 - **Scoreboard** (menu, or the match-over card): wins leaderboard and recent games from the shared SHUFL database.
 
@@ -32,8 +34,9 @@ Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 
 The room is **authoritative**. There is one Durable Object per room (`Room`, named by the code), and it holds the match state: weights on the table, scores, turn, and round.
 
-- A client sends intents only: `shot {seq, x, angle, speed}`, `aim` (a cosmetic preview), `ready`, `start`, `leave`.
-- On a `shot`, the room checks the seat, the turn, `seq`, that the opponent is connected, and that the values are ones a real gesture can produce. It then runs the shot to rest with the same solver the browser uses (`src/match.ts` → `src/physics.ts`), applies gutters, falls, and the foul-line sweep, scores the round after the 8th weight, and broadcasts `shot` with the input plus the new room snapshot.
+- A client sends intents only: `shot {seq, shot: {x, angle, speed}, end}`, `aim` (a cosmetic preview), `ready`, `start`, `leave`.
+- The match state carries `end` (which end is shooting this round; it flips in `startNextRound`) and `seed` (the match's sand seed). Both browsers turn the table to the room's `end`, and every shot's sand field is `sandSeed(seed, round, shotIndex)`, known before the throw, so the shooter can still animate without waiting for the network.
+- On a `shot`, the room checks the seat, the turn, `seq`, the `end` (if sent), that the opponent is connected, and that the values are ones a real gesture can produce. It then runs the shot to rest with the same solver the browser uses (`src/match.ts` → `src/physics.ts`), applies gutters, falls, and the foul-line sweep, scores the round after the 8th weight, and broadcasts `shot` with the input plus the new room snapshot.
 - Both browsers animate the throw locally from the pre-shot table (the shooter's starts right away, without waiting for the network). When the animation settles, each browser snaps the weights to the room's positions and takes turn, scores, and round state from the room. A rejected or lost shot is rewound from the room's snapshot, and a shot lost during a reconnect is re-sent.
 
 The solver uses fixed 240 Hz substeps, so a replay at any frame rate matches the room's result exactly in the same JS engine (tested in `src/online.test.ts`). Across engines the results can differ in the last floating-point bits. The settle step fixes that, so the table never desyncs. The simulation is only a few thousand substeps per shot, so the room can afford it. That is why the room is authoritative rather than trusting the host's browser: no player's device decides where the weights end up.
@@ -49,13 +52,29 @@ The rules follow SHUFL:
 | Weights | 4 per side, alternating shots, 8 shots per round |
 | Foul line | A weight has to be completely past the red foul line. Anything short is removed after the shot. |
 | Gutter / off the end | Out for the round |
+| Ends | Both ends are marked the same. Rounds alternate which end you shoot from, and only the zones at the end you're shooting toward count. |
 | Zones | 1, 2, 3, 4 moving toward the far end. A weight touching a line counts the lower zone. |
 | Hanger | A weight overhanging the far edge scores **+1 on top of its zone** (a zone-4 hanger is worth 5) |
 | Who scores | Only the side with the weight furthest down the table. It scores every one of its weights that is beyond the opponent's best weight. |
 | Next round | The side that scored throws first. After a blank round the order stays the same. |
 | Winning | The first side to reach the target (15 or 21) at the end of a round wins |
 
-The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`.
+The rules are pure functions in `src/rules.ts`, covered by `src/rules.test.ts`. They work in shooter-relative coordinates (`d` from the shooter's end), so they are the same for both ends; `toTable(end, x, d)` maps onto the physical table.
+
+## Tuning
+
+| Knob | Where | Default | What it does |
+| --- | --- | --- | --- |
+| `SAND.glide` | `src/physics.ts` | `0.93` | Multiplier on bare-wood friction (`WOOD_FRICTION` 1.55). Lower = slicker table. |
+| `SAND.drift` | `src/physics.ts` | `0.09` m/s² | Peak sideways push from lumpy sand. It steers and never adds speed. |
+| `SAND.grip` | `src/physics.ts` | `0.045` | ± friction variation between sand patches (changes how far a slide goes). |
+| `SAND.cell` | `src/physics.ts` | `0.32` m | Size of a sand patch. |
+| `SWAP.duration` | `src/swap.ts` | `3.2` s | Length of the end-swap fly-around. |
+| `SWAP.radius` / `SWAP.height` | `src/swap.ts` | `4.6` m / `3.0` m | How wide and how high the camera swings (it stays in the aisle between tables). |
+| `SWAP.swing` | `src/swap.ts` | `1.2` rad | How far round to the side of the table the camera goes. |
+| `SWAP.houseLights` / `SWAP.fogPush` | `src/swap.ts` | `0.75` / `11` m | House lights up and fog pushed back mid-flight, so the hall reads. |
+
+With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 4 cm in length of where it would on perfectly even wax (one standard deviation). `src/rules.test.ts` fails if that spread grows past 4 cm sideways or 7 cm in length. Set `drift` and `grip` to 0 for a perfectly predictable table.
 
 ## Shared history (D1)
 
@@ -80,7 +99,7 @@ Requires Node 22.12 or newer.
 ```bash
 npm install
 npm run dev          # Vite on http://localhost:5173: local and CPU play (no API)
-npm test             # rules, physics, match engine / sync, room codes, history validation
+npm test             # rules, ends, sand physics, match engine / sync, camera paths, room codes, history validation
 npm run build        # type-check (app + Worker), then write static assets to dist/
 ```
 
@@ -97,12 +116,13 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | File | Role |
 | --- | --- |
 | `src/rules.ts` | Table geometry, zone values, hangers, round scoring, turn order |
-| `src/physics.ts` | Custom 2D slide physics: Coulomb friction plus drag, weight-to-weight collisions, edge falls. Fixed 240 Hz substeps. |
+| `src/physics.ts` | Custom 2D slide physics: Coulomb friction plus drag, a seeded sand field (glide, drift, grip), weight-to-weight collisions, edge falls. Fixed 240 Hz substeps. |
 | `src/match.ts` | Pure match engine (shot → rest → sweep → score → next round), shared by the browser and the room |
 | `src/protocol.ts`, `src/room-code.ts` | Online message types and parsing; room codes and seat tokens |
 | `src/online.ts` | Browser room client: create/join, WebSocket with keepalive, reconnect, and room-gone detection |
-| `src/scene.ts` | Three.js scene: maple table with painted zones, gutters, end pit, lamps, neon, chrome weights, camera rig, HEAD inset |
+| `src/scene.ts` | Three.js scene: maple table marked at both ends, pits at both ends, instanced sand beads that weights plough aside, the hall (a shuffleboard either side, pool tables beyond, baked into a few draw calls), lamps, "Everyday I'm Shuffling" neon, chrome weights, camera rig that turns with the active end, HEAD inset |
 | `src/smooth.ts` | Follow-camera maths: a look-ahead target toward where the weight will stop, a critically damped spring, and soft clamps at the far end |
+| `src/swap.ts` | End-swap camera path between rounds (pure maths, tested in `src/camera.test.ts`) |
 | `src/textures.ts` | Canvas-generated textures (table, concrete, aim arrow). No image assets. |
 | `src/main.ts` | Match and round state machine, online settle and resync, pull-back and flick input, fall animations, HUD, menu, waiting room |
 | `src/scoreboard.ts`, `src/history.ts` | Scoreboard panel; SHUFL-shaped game records |
