@@ -2,24 +2,27 @@ import "./style.css";
 import { MAX_ANGLE, planCpuShot, powerOf, speedOf, type Shot } from "./ai.ts";
 import { Sound } from "./audio.ts";
 import { gameBody } from "./history.ts";
-import { roundLog, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
+import { randomSeed, roundLog, upgradeMatch, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
 import { OnlineClient, clearTicket, createRoom, joinRoom, loadTicket, roomLink, roomPreview, saveTicket, type LinkState } from "./online.ts";
-import { World, type Body } from "./physics.ts";
+import { World, sandSeed, type Body } from "./physics.ts";
 import type { AimInput, RoomSnapshot, RoomTicket, ServerMsg } from "./protocol.ts";
 import { codeFromLocation, isRoomCode, normalizeCode, randomToken } from "./room-code.ts";
 import {
   TABLE,
+  endForRound,
   isLive,
   matchWinner,
   nextFirstShooter,
   scoreRound,
   shooterFor,
+  type End,
   type RoundResult,
   type Team,
 } from "./rules.ts";
 import { GUTTER_W, GUTTER_Y, PIT_LEN, Stage, TEAM_COLORS, type PuckView } from "./scene.ts";
 import { Scoreboard, flushUnsent, recordGame } from "./scoreboard.ts";
 import { followLead } from "./smooth.ts";
+import { SWAP } from "./swap.ts";
 
 type Mode = "2p" | "cpu" | "online";
 interface Settings {
@@ -48,6 +51,8 @@ interface Weight {
   fall?: Fall;
   /** Shot index within the round; matches the online room's weight ids. */
   id?: number;
+  /** Where this weight last ploughed the sand, so fast slides clear a continuous track. */
+  trail?: { x: number; d: number };
 }
 
 /** `settle`: an online shot has finished animating and is waiting for the room's result. */
@@ -88,6 +93,10 @@ let matchId = "";
 let roundsLog: RoundLog[] = [];
 let scores: [number, number] = [0, 0];
 let round = 1;
+/** End the shooters stand at this round (flips every round). */
+let end: End = 0;
+/** Sand seed for the match; online it comes from the room so replays match. */
+let matchSeed = randomSeed();
 let firstShooter: Team = 0;
 let shotIndex = 0;
 let weights: Weight[] = [];
@@ -110,7 +119,7 @@ let link: LinkState = "connecting";
 let room: RoomSnapshot | null = null;
 /** Shots this browser has put on the table in the current room; equals the room's `seq` when in sync. */
 let localSeq = 0;
-let pendingShot: { seq: number; shot: ShotInput } | null = null;
+let pendingShot: { seq: number; shot: ShotInput; end: End } | null = null;
 let awaiting: RoomSnapshot | null = null;
 let remoteShots: ShotMsg[] = [];
 let rejectPending = false;
@@ -125,7 +134,7 @@ const teamName = (t: Team) => (matchMode === "online" && room?.players[t]?.name)
 const busy = () => phase === "rolling" || phase === "resolving" || phase === "settle";
 
 function canShoot(): boolean {
-  if (phase !== "aim" || !current || isCpuTurn()) return false;
+  if (phase !== "aim" || !current || isCpuTurn() || stage.swapping) return false;
   if (matchMode !== "online") return true;
   return current.team === seat && !!net?.isOpen && opponentHere();
 }
@@ -247,16 +256,33 @@ function clearWeights(): void {
   labels = [];
 }
 
+/** Waiting weights sit in the pit behind the shooter's end, each side's on its own half. */
 function rackPosition(w: Weight): void {
   const idx = weights.filter((o) => o.team === w.team && o.status === "rack").indexOf(w);
   const s = w.team === 0 ? -1 : 1;
-  w.view.group.position.set(s * (0.62 - idx * 0.125), -0.03, 0.12);
+  w.view.group.position.set(s * (0.5 - idx * 0.12), GUTTER_Y, PIT_LEN / 2);
   w.view.group.rotation.set(0, 0, 0);
 }
 
+/** Face the shooters' end for this round. `animate` plays the fly-around over the hall. Returns true if ends switched. */
+function faceEnd(next: End, animate: boolean): boolean {
+  const switched = next !== stage.end;
+  end = next;
+  stage.setEnd(next, animate);
+  if (switched && animate) sound.swoosh();
+  return switched && animate;
+}
+
+function roundBanner(swapped: boolean): void {
+  if (swapped) banner(`ROUND ${round} · SWITCH ENDS`, null, SWAP.duration * 0.7);
+  else banner(`ROUND ${round}`, null, 1.3);
+}
+
 function newMatch(mode: "2p" | "cpu" = matchMode === "cpu" ? "cpu" : "2p"): void {
+  const rematch = phase === "matchEnd";
   matchMode = mode;
   matchId = randomToken(8);
+  matchSeed = randomSeed();
   roundsLog = [];
   scores = [0, 0];
   round = 1;
@@ -265,21 +291,23 @@ function newMatch(mode: "2p" | "cpu" = matchMode === "cpu" ? "cpu" : "2p"): void
   matchLive = true;
   hideCard();
   hud.inset.classList.remove("off");
-  startRound();
+  startRound(rematch);
 }
 
-function startRound(): void {
+function startRound(animateEnd = false): void {
   endToken++;
   clearWeights();
   lastResult = null;
   shotIndex = 0;
+  const swapped = faceEnd(endForRound(round), animateEnd);
+  stage.sprinkleSand(matchSeed + round);
   for (let i = 0; i < TABLE.weightsPerSide; i++) {
     for (const team of [0, 1] as Team[]) {
       weights.push({ team, view: stage.createPuck(team), body: null, status: "rack" });
     }
   }
   weights.forEach(rackPosition);
-  banner(`ROUND ${round}`, null, 1.3);
+  roundBanner(swapped);
   nextTurn();
 }
 
@@ -299,7 +327,7 @@ function nextTurn(): void {
   if (mine) sound.chime();
   setTimeout(() => {
     if (phase === "aim" && current?.team === team) banner(mine ? `YOUR TURN · ${left} LEFT` : `${teamName(team)} · ${left} LEFT`, team, 1.4);
-  }, shotIndex === 0 ? 1100 : 0);
+  }, stage.swapping ? SWAP.duration * 1000 : shotIndex === 0 ? 1100 : 0);
   hud.hint.textContent = turnHint();
   hud.hint.classList.add("show");
   setPower(null);
@@ -323,7 +351,9 @@ function launch(x: number, angle: number, speed: number, remote = false): void {
   lastPower[w.team] = powerOf(speed);
   w.id = shotIndex;
   w.body = { x, d: TABLE.launchD, vx: speed * Math.sin(angle), vd: speed * Math.cos(angle), active: true };
+  w.trail = { x, d: TABLE.launchD };
   world.bodies.push(w.body);
+  world.sand = sandSeed(matchSeed, round, shotIndex);
   w.status = "play";
   phase = "rolling";
   resolveTimer = 0;
@@ -335,8 +365,8 @@ function launch(x: number, angle: number, speed: number, remote = false): void {
   sound.launch(powerOf(speed));
   if (matchMode === "online") {
     if (!remote) {
-      pendingShot = { seq: localSeq, shot: { x, angle, speed } };
-      net?.send({ t: "shot", seq: localSeq, shot: pendingShot.shot });
+      pendingShot = { seq: localSeq, shot: { x, angle, speed }, end };
+      net?.send({ t: "shot", seq: localSeq, shot: pendingShot.shot, end });
     }
     localSeq++;
   }
@@ -353,7 +383,6 @@ function startFall(w: Weight, edge: "side" | "end" | "near" | "sweep"): void {
     fall.vy = 0.9;
     fall.vd = 0;
   }
-  if (edge === "near") fall.floor = -0.035;
   w.fall = fall;
   w.status = "falling";
 }
@@ -393,9 +422,10 @@ function stepFalls(dt: number): boolean {
       f.d = pitEnd;
       f.vd *= -0.25;
     }
-    if (f.d < -0.2) {
-      f.d = -0.2;
-      f.vd = 0;
+    const nearPit = -(PIT_LEN - R - 0.02);
+    if (f.d < nearPit) {
+      f.d = nearPit;
+      f.vd *= -0.25;
     }
     if (f.landed) {
       const sp = Math.hypot(f.vx, f.vd);
@@ -408,7 +438,7 @@ function stepFalls(dt: number): boolean {
       if (next === 0 && Math.abs(f.tilt) < 0.01) w.status = "gone";
     } else {
       const drop = Math.min(1, -f.y / 0.06);
-      f.tilt = overEnd ? -drop * 0.8 : Math.sign(f.x) * drop * 0.9;
+      f.tilt = overEnd ? (f.d < 0 ? drop : -drop) * 0.8 : Math.sign(f.x) * drop * 0.9;
     }
     const g = w.view.group;
     g.position.set(f.x, f.y, -f.d);
@@ -475,10 +505,10 @@ function endRound(auth: MatchState | null = null): void {
       if (result.team === null) sound.blank();
       else sound.score(result.points);
       const detail =
-        result.team === null
+        (result.team === null
           ? "No weight counted. Order stays the same."
           : result.counted.map((c) => (c.hanger ? `${c.zone}+1 hanger` : `${c.zone}`)).join(" · ") +
-            ` — ${teamName(result.team)} throws first next round`;
+            ` — ${teamName(result.team)} throws first next round.`) + " Ends switch.";
       cardKind = "round";
       showCard(
         `ROUND ${round}`,
@@ -497,7 +527,7 @@ function nextRound(): void {
   round++;
   hideCard();
   hud.inset.classList.remove("off");
-  startRound();
+  startRound(true);
 }
 
 function saveLocalMatch(winner: Team): void {
@@ -653,6 +683,7 @@ function exitRoom(tell: boolean, message = ""): void {
 }
 
 function onServer(msg: ServerMsg): void {
+  if ("room" in msg && msg.room.match) upgradeMatch(msg.room.match);
   switch (msg.t) {
     case "welcome":
       seat = msg.seat;
@@ -701,7 +732,7 @@ function onRoom(r: RoomSnapshot, welcome = false): void {
     if (r.match) return applySnapshot(r);
   }
   if (pendingShot && r.seq > pendingShot.seq) pendingShot = null;
-  if (welcome && pendingShot && r.seq === pendingShot.seq) net?.send({ t: "shot", seq: pendingShot.seq, shot: pendingShot.shot });
+  if (welcome && pendingShot && r.seq === pendingShot.seq) net?.send({ t: "shot", seq: pendingShot.seq, shot: pendingShot.shot, end: pendingShot.end });
   if (r.status === "lobby" || !r.match) {
     if (matchMode === "online" && phase !== "menu") abandonTable();
     showLobby();
@@ -716,7 +747,7 @@ function inSync(r: RoomSnapshot): boolean {
   const m = r.match;
   if (!m || matchMode !== "online") return false;
   const kind = phase === "aim" || phase === "roundEnd" || phase === "matchEnd" ? phase : null;
-  return r.seq === localSeq && m.round === round && m.shotIndex === shotIndex && m.phase === kind;
+  return r.seq === localSeq && m.round === round && m.end === end && m.seed === matchSeed && m.shotIndex === shotIndex && m.phase === kind;
 }
 
 /** Bring the table up to the room: animate the next opponent shot, or rebuild if out of step. */
@@ -771,6 +802,7 @@ function settleTo(r: RoomSnapshot): void {
         w.status = "play";
       }
       Object.assign(w.body, { x: auth.x, d: auth.d, vx: 0, vd: 0, active: true });
+      w.trail = undefined;
       w.view.group.position.set(auth.x, 0, -auth.d);
       w.view.group.rotation.set(0, 0, 0);
     } else if (w.status === "play" || w.status === "falling") {
@@ -792,10 +824,11 @@ function settleTo(r: RoomSnapshot): void {
 function applySnapshot(r: RoomSnapshot): void {
   const m = r.match;
   if (!m) return;
+  const fromRoundEnd = phase === "roundEnd" || phase === "matchEnd";
   hideLobby();
   hideCard();
   endToken++;
-  const newRound = matchMode !== "online" || m.round !== round || !matchLive;
+  const newRound = matchMode !== "online" || m.round !== round || !matchLive || m.seed !== matchSeed;
   matchMode = "online";
   matchLive = m.phase !== "matchEnd";
   clearWeights();
@@ -807,10 +840,14 @@ function applySnapshot(r: RoomSnapshot): void {
   remoteAim = null;
   localSeq = r.seq;
   round = m.round;
+  matchSeed = m.seed;
   firstShooter = m.firstShooter;
   shotIndex = m.shotIndex;
   scores = [m.scores[0], m.scores[1]];
   lastResult = null;
+  // Only a round the players just watched finish gets the fly-around; joins and resyncs just ease over.
+  const swapped = faceEnd(m.end, fromRoundEnd && newRound && m.shotIndex === 0);
+  if (newRound) stage.sprinkleSand(m.seed + m.round);
   for (const tw of m.table) {
     const w: Weight = { team: tw.team, view: stage.createPuck(tw.team), body: { x: tw.x, d: tw.d, vx: 0, vd: 0, active: true }, status: "play", id: tw.id };
     w.view.group.position.set(tw.x, 0, -tw.d);
@@ -824,7 +861,7 @@ function applySnapshot(r: RoomSnapshot): void {
   hud.inset.classList.remove("off");
   stage.hideAim();
   if (m.phase === "aim") {
-    if (m.shotIndex === 0 && newRound) banner(`ROUND ${round}`, null, 1.3);
+    if (m.shotIndex === 0 && newRound) roundBanner(swapped);
     nextTurn();
   } else endRound(m);
   renderHud();
@@ -1250,9 +1287,18 @@ function stepRemoteAim(dt: number): void {
   }
 }
 
+/** Plough the sand along the path a weight moved this frame, in steps shorter than its radius. */
+function plough(w: Weight, x: number, d: number): void {
+  const from = w.trail ?? { x, d };
+  const n = Math.min(40, Math.max(1, Math.ceil(Math.hypot(x - from.x, d - from.d) / 0.04)));
+  for (let i = 1; i <= n; i++) stage.plowSand(from.x + ((x - from.x) * i) / n, from.d + ((d - from.d) * i) / n);
+  w.trail = { x, d };
+}
+
 function update(dt: number): void {
   if (bannerTimer > 0 && (bannerTimer -= dt) <= 0) hud.banner.classList.remove("show");
-  if (phase === "aim" && isCpuTurn()) stepCpu(dt);
+  hud.inset.classList.toggle("swap", stage.swapping);
+  if (phase === "aim" && isCpuTurn() && !stage.swapping) stepCpu(dt);
   if (phase === "aim" && isRemoteTurn()) stepRemoteAim(dt);
 
   let slideSpeed = 0;
@@ -1273,6 +1319,8 @@ function update(dt: number): void {
       const b = w.body;
       w.view.group.position.set(b.x, 0, -b.d);
       const sp = Math.hypot(b.vx, b.vd);
+      if (sp > 0 || w.trail) plough(w, b.x, b.d);
+      if (sp === 0) w.trail = undefined;
       slideSpeed += sp;
       followD = Math.max(followD, followLead(b.d, b.vd, sp));
     }

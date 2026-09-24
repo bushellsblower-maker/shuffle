@@ -271,6 +271,29 @@ export class Sound {
     this.bell(987.8, t + 0.11, out, 0.18, 0.9);
   }
 
+  /** Switching ends: a soft air whoosh as the camera sweeps over the hall. */
+  swoosh(): void {
+    if (!this.ready()) return;
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const out = this.out(0.5, 0.4);
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const f = ctx.createBiquadFilter();
+    f.type = "bandpass";
+    f.Q.value = 1.1;
+    f.frequency.setValueAtTime(260, t);
+    f.frequency.exponentialRampToValueAtTime(1300, t + 0.9);
+    f.frequency.exponentialRampToValueAtTime(320, t + 2.2);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.8);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.4);
+    src.connect(f).connect(g).connect(out);
+    src.start(t, Math.random());
+    src.stop(t + 2.5);
+  }
+
   /* ---------- instruments ---------- */
 
   /** Soft bell: fundamental plus a detuned octave and a quiet inharmonic shimmer. */

@@ -5,14 +5,16 @@
  * settles onto the room's resting positions.
  */
 import { MAX_ANGLE, MIN_SPEED } from "./ai.ts";
-import { MAX_SPEED, World, type Body } from "./physics.ts";
+import { MAX_SPEED, World, sandSeed, type Body } from "./physics.ts";
 import {
   TABLE,
+  endForRound,
   isLive,
   matchWinner,
   nextFirstShooter,
   scoreRound,
   shooterFor,
+  type End,
   type RoundResult,
   type Team,
 } from "./rules.ts";
@@ -52,6 +54,10 @@ export interface MatchState {
   target: number;
   scores: [number, number];
   round: number;
+  /** End the shooters stand at this round; flips every round (`endForRound`). */
+  end: End;
+  /** Per-match sand seed; each shot's sand field is `sandSeed(seed, round, shotIndex)`. */
+  seed: number;
   firstShooter: Team;
   shotIndex: number;
   /** Live weights at rest, in throw order (the solver's collision order depends on it). */
@@ -63,11 +69,17 @@ export interface MatchState {
   startedAt: number;
 }
 
-export function newMatchState(target: number, firstShooter: Team = 0, now = Date.now()): MatchState {
+export function randomSeed(): number {
+  return Math.floor(Math.random() * 2 ** 31);
+}
+
+export function newMatchState(target: number, firstShooter: Team = 0, now = Date.now(), seed = randomSeed()): MatchState {
   return {
     target,
     scores: [0, 0],
     round: 1,
+    end: endForRound(1),
+    seed,
     firstShooter,
     shotIndex: 0,
     table: [],
@@ -81,6 +93,18 @@ export function newMatchState(target: number, firstShooter: Team = 0, now = Date
 
 export function shooterOf(s: MatchState): Team | null {
   return s.phase === "aim" ? shooterFor(s.firstShooter, s.shotIndex) : null;
+}
+
+/** Fill in fields a room saved by an older build may lack. */
+export function upgradeMatch(s: MatchState): MatchState {
+  if (s.end !== 0 && s.end !== 1) s.end = endForRound(s.round);
+  if (typeof s.seed !== "number" || !Number.isFinite(s.seed)) s.seed = 0;
+  return s;
+}
+
+/** Sand seed for the next shot of this match. */
+export function nextShotSand(s: MatchState): number {
+  return sandSeed(s.seed, s.round, s.shotIndex);
 }
 
 /** Weights each side still has to throw this round. */
@@ -113,11 +137,14 @@ export function launchBody(shot: ShotInput): Body {
   };
 }
 
-/** Run one shot to rest. Returns the weights still in play after gutters, falls, and the foul-line sweep. */
-export function simulateShot(table: readonly TableWeight[], shot: ShotInput, id: number, team: Team): TableWeight[] {
+/**
+ * Run one shot to rest on the sand field `sand` (null for even wax). Returns
+ * the weights still in play after gutters, falls, and the foul-line sweep.
+ */
+export function simulateShot(table: readonly TableWeight[], shot: ShotInput, id: number, team: Team, sand: number | null = null): TableWeight[] {
   const bodies: Body[] = table.map((w) => ({ x: w.x, d: w.d, vx: 0, vd: 0, active: true }));
   bodies.push(launchBody(shot));
-  const world = new World(bodies);
+  const world = new World(bodies, sand);
   const meta = [...table.map((w) => ({ id: w.id, team: w.team })), { id, team }];
   for (let t = 0; t < MAX_SIM_SECONDS && world.moving; t += SIM_DT) world.step(SIM_DT);
   const out: TableWeight[] = [];
@@ -146,11 +173,15 @@ function finishRound(s: MatchState): void {
   s.phase = s.winner === null ? "roundEnd" : "matchEnd";
 }
 
-/** Apply a shot for `team`. Mutates `s`; returns an error message if the shot is not allowed. */
-export function throwShot(s: MatchState, team: Team, shot: ShotInput): string | null {
+/**
+ * Apply a shot for `team`, thrown from `end` if the client said which. Mutates
+ * `s`; returns an error message if the shot is not allowed.
+ */
+export function throwShot(s: MatchState, team: Team, shot: ShotInput, end?: End): string | null {
   if (s.phase !== "aim") return "The round is over";
   if (shooterOf(s) !== team) return "Not your turn";
-  s.table = simulateShot(s.table, shot, s.shotIndex, team);
+  if (end !== undefined && end !== s.end) return "Out of sync";
+  s.table = simulateShot(s.table, shot, s.shotIndex, team, nextShotSand(s));
   s.shotIndex++;
   if (s.shotIndex >= SHOTS_PER_ROUND) finishRound(s);
   return null;
@@ -160,6 +191,7 @@ export function startNextRound(s: MatchState): string | null {
   if (s.phase !== "roundEnd" || !s.last) return "No round to advance";
   s.firstShooter = nextFirstShooter(s.firstShooter, s.last);
   s.round++;
+  s.end = endForRound(s.round);
   s.shotIndex = 0;
   s.table = [];
   s.last = null;

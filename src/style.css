@@ -198,7 +198,8 @@ body {
   color: var(--amber);
 }
 
-.inset.off {
+.inset.off,
+.inset.swap {
   opacity: 0;
 }
 

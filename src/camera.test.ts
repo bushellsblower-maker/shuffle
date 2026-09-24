@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TABLE } from "./rules.ts";
 import { World, slideDistance, stoppingDistance, speedForDistance, type Body } from "./physics.ts";
-import { FOLLOW_SMOOTH } from "./scene.ts";
+import { FOLLOW_SMOOTH, WALL_SIGN } from "./scene.ts";
 import { followLead, smoothDamp, smoothMin, type Spring } from "./smooth.ts";
+import { SWAP, swapPose, type Vec3 } from "./swap.ts";
 
 interface Trace {
   /** Worst distance the camera focus trailed the lead weight while it moved. */
@@ -136,6 +137,47 @@ test("new follow trails a sliding weight much less, without overshooting it", ()
       assert.ok(after.settle <= before.settle, `${at} settle ${after.settle.toFixed(2)} vs ${before.settle.toFixed(2)}`);
       assert.equal(after.backstep, 0, `${at} never moves back`);
     }
+  }
+});
+
+test("the back wall reads exactly: Everyday I'm Shuffling", () => {
+  assert.equal(WALL_SIGN.join(" "), "Everyday I'm Shuffling");
+});
+
+test("end swap flies out over the hall and lands exactly behind the new end", () => {
+  const L = TABLE.length;
+  const centre = { x: 0, y: 0, z: -L / 2 };
+  // End 0's HEAD view → end 1's aim view (mirrors what Stage passes in), and back again.
+  const cases: { from: { pos: Vec3; look: Vec3 }; to: { pos: Vec3; look: Vec3 }; side: 1 | -1 }[] = [
+    { from: { pos: { x: 0, y: 1.9, z: -L + 2 }, look: { x: 0, y: 0, z: -L + 1 } }, to: { pos: { x: 0, y: 1.3, z: -L - 1.55 }, look: { x: 0, y: 0, z: -L + 2.9 } }, side: 1 },
+    { from: { pos: { x: 0, y: 1.3, z: -2 }, look: { x: 0, y: 0, z: -1 } }, to: { pos: { x: 0, y: 1.25, z: 1.8 }, look: { x: 0, y: 0, z: -3.1 } }, side: -1 },
+  ];
+  for (const { from, to, side } of cases) {
+    const hall = { x: side * 2.2, y: -0.45, z: centre.z };
+    const at = (s: number) => swapPose(s, from, to, centre, hall, side);
+    const dist = (a: Vec3, b: Vec3) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+    assert.ok(dist(at(0).pos, from.pos) < 1e-9 && dist(at(0).look, from.look) < 1e-9, "starts where the camera is");
+    assert.ok(dist(at(1).pos, to.pos) < 1e-9 && dist(at(1).look, to.look) < 1e-9, "ends on the new end's view");
+    assert.ok(at(0).reveal < 1e-9 && at(1).reveal < 1e-9 && Math.abs(at(0.5).reveal - 1) < 1e-9, "house lights peak mid-flight");
+
+    const frames = Math.round(SWAP.duration * 60);
+    let widest = 0;
+    let highest = 0;
+    let step = 0;
+    let prev = at(0).pos;
+    for (let i = 1; i <= frames; i++) {
+      const p = at(i / frames).pos;
+      widest = Math.max(widest, Math.hypot(p.x - centre.x, p.z - centre.z));
+      highest = Math.max(highest, p.y);
+      step = Math.max(step, dist(p, prev));
+      prev = p;
+      assert.ok(Math.abs(p.x) < 8.3 && p.z < 2.1 && p.z > -L - 2.1 && p.y > 0.5, `stays inside the hall at frame ${i}`);
+    }
+    assert.ok(widest > SWAP.radius - 0.05, `swings wide enough to see the other tables (${widest.toFixed(2)} m)`);
+    assert.ok(highest > SWAP.height - 0.05, "rises over the tables");
+    assert.ok(step < 0.25, `smooth at 60 fps (largest step ${step.toFixed(3)} m)`);
+    assert.ok(dist(at(1 / frames).pos, from.pos) < 0.01 && dist(at(1 - 1 / frames).pos, to.pos) < 0.01, "eases in and out");
+    assert.ok(Math.abs(at(0.5).pos.x) > 4, "the camera is out to the side of the hall mid-flight");
   }
 });
 
