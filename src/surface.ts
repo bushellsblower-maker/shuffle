@@ -7,21 +7,38 @@
  *   the sand stand out more; `surface.test.ts` stops it going so dark that the
  *   markings stop reading.
  * - `grainDarken`: how many lightness points the grain streaks sit under their plank.
- * - `dustAlpha`: opacity range of the sand dust specks painted into the wood.
+ * - `dustSpecks`: how many sand dust specks are painted into the wood (one
+ *   texel is about 1.8 mm). `dustCoarse` is the share that are 2×2 texels
+ *   rather than 1; `dustAlpha` is their opacity range.
+ * - `beadCount`: 3D sand beads on the active table, all in one instanced draw.
+ * - `beadRadius`: smallest and largest bead radius (m). Sizes skew small
+ *   (`beadRadius`); `surface.test.ts` caps the triangle budget.
  * - `beadColor` / `beadGlow`: albedo and emissive of the 3D sand beads.
  * - `ink` / `red`: zone lines and numbers, and the foul line (matte decal).
  */
 export const SURFACE = {
   woodHue: [34, 40],
   woodSaturation: 54,
-  woodLightness: [59, 65],
-  grainDarken: 16,
+  woodLightness: [47, 53],
+  grainDarken: 14,
+  dustSpecks: 64000,
+  dustCoarse: 0.03,
   dustAlpha: [0.22, 0.56],
+  beadCount: 6000,
+  beadRadius: [0.0018, 0.0042],
   beadColor: "#fbf3e0",
   beadGlow: "#3a3222",
   ink: "#16161a",
-  red: "#b42014",
+  red: "#8a150d",
 } as const;
+
+/** Triangles in one sand bead (a detail-0 icosahedron). */
+export const BEAD_TRIANGLES = 20;
+
+/** Radius of a bead from two uniform draws in [0, 1): the product skews towards fine grains. */
+export function beadRadius(a: number, b: number, range: readonly [number, number] = SURFACE.beadRadius): number {
+  return range[0] + a * b * (range[1] - range[0]);
+}
 
 export type RGB = readonly [number, number, number];
 

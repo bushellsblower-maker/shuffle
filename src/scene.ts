@@ -4,7 +4,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { TABLE, toTable, type End, type Team } from "./rules.ts";
 import { CENTRE, CameraRig, ROAM, clampRoam, toWorld, type CameraMode } from "./rig.ts";
-import { SURFACE } from "./surface.ts";
+import { SURFACE, beadRadius } from "./surface.ts";
 import { SWAP } from "./swap.ts";
 import { aimTexture, concreteTexture, feltTexture, glowTexture, markingsTexture, neonTexture, tableTexture } from "./textures.ts";
 
@@ -41,8 +41,8 @@ const EXPOSURE = 1.05;
 const FOG_NEAR = 7;
 const FOG_FAR = 18;
 
-/** Sand beads drawn on the table. Visual only; the physics has its own field (`SAND` in physics.ts). */
-const SAND_GRAINS = 2200;
+/** Sand beads drawn on the table (`SURFACE.beadCount`). Visual only; the physics has its own field (`SAND` in physics.ts). */
+const SAND_GRAINS: number = SURFACE.beadCount;
 const SAND_BUCKET = 0.1;
 
 export interface Rect {
@@ -190,6 +190,8 @@ export class Stage {
   private grain = new Float32Array(SAND_GRAINS * 4);
   private grainBucket = new Int16Array(SAND_GRAINS);
   private buckets: number[][] = [];
+  /** Lowest and highest bead index moved since the last upload. */
+  private sandDirty: [number, number] | null = null;
   private dummy = new THREE.Object3D();
 
   constructor(canvas: HTMLCanvasElement) {
@@ -287,25 +289,45 @@ export class Stage {
     this.sprinkleSand(1);
   }
 
-  /** Fresh sand for a new round: beads spread down the table, densest along the middle of the lane. */
+  /**
+   * Fresh sand for a new round: beads spread down the table, densest along the
+   * middle of the lane. Indices run in order of distance down the table, so a
+   * weight ploughing one stretch only re-uploads a short run of instances.
+   */
   sprinkleSand(seed: number): void {
     const rand = rng(seed * 7919 + 17);
     this.buckets.forEach((b) => (b.length = 0));
     for (let i = 0; i < SAND_GRAINS; i++) {
       const across = (rand() + rand() + rand()) / 1.5 - 1;
       const x = across * (W / 2 - 0.012);
-      const d = 0.02 + rand() * (L - 0.04);
+      const d = 0.02 + ((i + rand()) / SAND_GRAINS) * (L - 0.04);
       const g = i * 4;
       this.grain[g] = x;
       this.grain[g + 1] = d;
-      this.grain[g + 2] = 0.0028 + rand() * rand() * 0.0034;
+      this.grain[g + 2] = beadRadius(rand(), rand());
       this.grain[g + 3] = rand() * Math.PI * 2;
       const b = Math.floor(d / SAND_BUCKET);
       this.grainBucket[i] = b;
       this.buckets[b].push(i);
       this.placeGrain(i, 0);
     }
-    this.sand.instanceMatrix.needsUpdate = true;
+    this.markSand(0, SAND_GRAINS - 1);
+  }
+
+  private markSand(lo: number, hi: number): void {
+    const d = this.sandDirty;
+    this.sandDirty = d ? [Math.min(d[0], lo), Math.max(d[1], hi)] : [lo, hi];
+  }
+
+  /** Upload the bead matrices changed since the last frame, as one range. */
+  private flushSand(): void {
+    const d = this.sandDirty;
+    if (!d) return;
+    const m = this.sand.instanceMatrix;
+    m.clearUpdateRanges();
+    m.addUpdateRange(d[0] * 16, (d[1] - d[0] + 1) * 16);
+    m.needsUpdate = true;
+    this.sandDirty = null;
   }
 
   private placeGrain(i: number, y: number): void {
@@ -324,7 +346,8 @@ export class Stage {
     const p = toTable(this.endNow, x, d);
     const reach = R + 0.004;
     const b0 = Math.floor(p.d / SAND_BUCKET);
-    let moved = false;
+    let lo = SAND_GRAINS;
+    let hi = -1;
     for (let b = b0 - 1; b <= b0 + 1; b++) {
       const list = this.buckets[b];
       if (!list) continue;
@@ -341,7 +364,8 @@ export class Stage {
         const push = reach + ((i * 37) % 11) * 0.0004;
         this.grain[g] = p.x + nx * push;
         this.grain[g + 1] = p.d + nd * push;
-        moved = true;
+        if (i < lo) lo = i;
+        if (i > hi) hi = i;
         const nb = Math.floor(this.grain[g + 1] / SAND_BUCKET);
         const offTable = Math.abs(this.grain[g]) > W / 2 - 0.002 || this.grain[g + 1] < 0 || this.grain[g + 1] > L;
         if (offTable || nb !== b) {
@@ -359,7 +383,7 @@ export class Stage {
         this.placeGrain(i, 0);
       }
     }
-    if (moved) this.sand.instanceMatrix.needsUpdate = true;
+    if (hi >= lo) this.markSand(lo, hi);
   }
 
   /* ---------- room and hall ---------- */
@@ -786,6 +810,7 @@ export class Stage {
     const flicker = 0.92 + 0.08 * Math.sin(this.time * 2.3) * Math.sin(this.time * 7.1);
     this.neon.forEach((m) => (m.opacity = flicker));
 
+    this.flushSand();
     const r = this.renderer;
     const w = window.innerWidth;
     const h = window.innerHeight;
