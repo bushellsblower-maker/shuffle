@@ -1,7 +1,7 @@
 import "./style.css";
 import { MAX_ANGLE, planCpuShot, powerOf, speedOf, type Shot } from "./ai.ts";
 import { Sound } from "./audio.ts";
-import { dragIntent, inReach, type DragIntent } from "./gesture.ts";
+import { THROW, dragIntent, flickThrow, inReach, type DragIntent, type PointerSample } from "./gesture.ts";
 import { gameBody } from "./history.ts";
 import { startLoading } from "./loading.ts";
 import { randomSeed, roundLog, upgradeMatch, weightsLeft, type MatchState, type RoundLog, type ShotInput } from "./match.ts";
@@ -1222,7 +1222,7 @@ interface Drag {
   /** Where the weight is set down for this gesture. */
   x: number;
   d: number;
-  samples: { x: number; y: number; t: number }[];
+  samples: PointerSample[];
   intent: DragIntent;
   mode: "idle" | "pull" | "flick";
   power: number;
@@ -1265,7 +1265,8 @@ canvas.addEventListener("pointerdown", (e) => {
 canvas.addEventListener("pointermove", (e) => {
   if (!drag || e.pointerId !== drag.id || !current) return;
   drag.samples.push({ x: e.clientX, y: e.clientY, t: e.timeStamp });
-  if (drag.samples.length > 12) drag.samples.shift();
+  const horizon = e.timeStamp - THROW.historyMs;
+  while (drag.samples.length > 2 && drag.samples[0].t < horizon) drag.samples.shift();
   const dx = e.clientX - drag.sx;
   const dy = e.clientY - drag.sy;
   const was = drag.intent;
@@ -1281,7 +1282,7 @@ canvas.addEventListener("pointermove", (e) => {
   if (dy > 10) {
     drag.mode = "pull";
     drag.power = clamp((dy - 10) / pullRange(), 0, 1);
-    drag.angle = clamp(Math.atan2(-dx, dy) * 0.45, -MAX_ANGLE, MAX_ANGLE);
+    drag.angle = clamp(Math.atan2(-dx, dy) * THROW.aimScale, -MAX_ANGLE, MAX_ANGLE);
     placeAim(drag.x, drag.d, drag.power * 0.2);
     stage.showAim(drag.x, drag.d, drag.angle, drag.power, current.team);
     setPower(drag.power);
@@ -1305,20 +1306,10 @@ function endDrag(e: PointerEvent, cancelled: boolean): void {
     return;
   }
   if (!cancelled && d.mode === "flick") {
-    // Velocity over the last ~50ms+ of the gesture; a pause before release kills the flick.
-    let a = d.samples[0];
-    for (let i = d.samples.length - 1; i >= 0; i--) {
-      if (e.timeStamp - d.samples[i].t >= 50) {
-        a = d.samples[i];
-        break;
-      }
-    }
-    const dt = Math.max(16, e.timeStamp - a.t);
-    const vx = (e.clientX - a.x) / dt;
-    const vy = (e.clientY - a.y) / dt;
-    if (-vy > 0.25) {
-      const power = clamp(-vy / 3.4, 0.05, 1);
-      launch(d.x, d.d, clamp(Math.atan2(vx, -vy) * 0.45, -MAX_ANGLE, MAX_ANGLE), speedOf(power));
+    // A pause before the lift still kills the flick: the fit only sees the last THROW.windowMs.
+    const flick = flickThrow(d.samples.concat({ x: e.clientX, y: e.clientY, t: e.timeStamp }));
+    if (flick?.power != null) {
+      launch(d.x, d.d, clamp(flick.angle, -MAX_ANGLE, MAX_ANGLE), speedOf(flick.power));
       return;
     }
   }
