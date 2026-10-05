@@ -6,6 +6,8 @@ This is the game. The SHUFL scorekeeper for real tables lives separately at [shu
 
 Live target: **https://shuffle.cybush.uk** (Cloudflare Worker `shuffle`).
 
+Version: curl -sI https://shuffle.cybush.uk/ | grep x-cybush-version ; /__version
+
 ## Play
 
 - **Pull back** anywhere on the screen and release to slide the weight. The further you pull, the harder the shot. Drag sideways while pulling to angle it.
@@ -150,7 +152,7 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | `src/scoreboard.ts`, `src/history.ts` | Scoreboard panel; SHUFL-shaped game records |
 | `src/ai.ts` | CPU opponent. It either draws to the 3 or 4 zone or knocks off your leading weight, with some aim and power noise. |
 | `src/audio.ts` | Synthesized WebAudio effects, with nothing loaded from the network. The slide rumble runs straight to the output. Hits (inharmonic metal partials plus a click), launch thump, gutter drop and rattle, score bell chord, blank-round mallet, brass win fanfare, and UI clicks go through a compressor and a synthesized room reverb. |
-| `worker/index.ts` | Worker entry: `/api/rooms…` (create, info, join, WebSocket) and `/api/games`, `/api/leaderboard`. Everything else is static assets. |
+| `worker/index.ts` | Worker entry: `GET /__version`, `/api/rooms…` (create, info, join, WebSocket) and `/api/games`, `/api/leaderboard`. Page views are stamped with `X-Cybush-Version`; everything else is static assets. |
 | `worker/room.ts` | `Room` Durable Object: seats and tokens, authoritative match, idle expiry alarm, D1 write on match end |
 | `worker/api.ts`, `worker/games.ts`, `worker/schema.ts` | History API, SHUFL-compatible validation, schema bootstrap for empty local D1 |
 
@@ -160,7 +162,7 @@ The physics is a custom solver rather than a rigid-body engine. A shuffleboard w
 
 Publishing is **GitHub → Cloudflare** only. `wrangler.jsonc` defines the Worker `shuffle` (`worker/index.ts`), with:
 
-- static assets from `dist/`, SPA fallback on, and only `/api/*` routed to the Worker first
+- static assets from `dist/`, SPA fallback on, and the Worker runs first for `/api/*`, `/`, `/index.html`, `/__version`, and `/join/*`
 - Durable Object class `Room` bound as `ROOMS` (migration `v1`, SQLite-backed, available on the Workers Free plan)
 - D1 `shufl` bound as `DB`, using its existing `database_id`
 - custom domain `shuffle.cybush.uk`
