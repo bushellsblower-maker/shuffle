@@ -99,16 +99,16 @@ With the defaults, a full-length draw lands within about 2 cm sideways and 3 to 
 
 ## Shared history (D1)
 
-`wrangler.jsonc` binds SHUFL's existing D1 database `shufl` (`41df98c1-d6bd-479a-b2c9-8f1b8c83966b`) as `DB`. The game reuses SHUFL's `games` table and `leaderboard` view. It creates no new tables. The SQL in `worker/schema.ts` is SHUFL's migration verbatim, and it only runs against an empty database, such as a local `wrangler dev` one.
+`wrangler.jsonc` binds SHUFL's existing D1 database `shufl` (`41df98c1-d6bd-479a-b2c9-8f1b8c83966b`) as `DB`. The game reuses SHUFL's `games` table. `migrations/0002_ranked.sql` adds a `ranked` column and points the shared `leaderboard` view at ranked rows only. The Worker applies that change on first use, including an empty local D1 (`wrangler dev`).
 
 | Route | |
 | --- | --- |
-| `GET /api/leaderboard?limit=` | Wins leaderboard (SHUFL's `leaderboard` view) |
-| `GET /api/games?limit=` | Recent games from both apps, with `meta` |
-| `POST /api/games` | Record a finished **local or CPU** match. The body has the same shape as SHUFL's `POST /api/games` and goes through the same validation (`worker/games.ts`). |
+| `GET /api/leaderboard?limit=` | Wins leaderboard. Only `ranked = 1` rows count. |
+| `GET /api/games?limit=` | Recent games from both apps, ranked and unranked, with `meta` |
+| `POST /api/games` | Record a finished **local or CPU** match. It is stored with `ranked = 0`. Online results are rejected. |
 
-- **Online** matches are written by the room Durable Object when a side wins, so a browser cannot post a fake online result. Row id: `s3d-online-<CODE>-<startedAt>`.
-- **Local / CPU** matches are posted by the browser when a winner is declared. Row ids are `s3d-local-…` / `s3d-cpu-…`. Posts that fail offline are queued in `localStorage` and retried on the next load. `POST` is insert-only (`ON CONFLICT DO NOTHING`), so a replayed post cannot overwrite a row.
+- **Online** matches are written by the room Durable Object when a side wins (`ranked = 1`). A browser cannot post one. Row id: `s3d-online-<CODE>-<startedAt>`. No signing secret is required.
+- **Local / CPU** matches are posted by the browser when a winner is declared and kept for history, but they do not count on the leaderboard. Row ids are `s3d-local-…` / `s3d-cpu-…`. Posts that fail offline are queued in `localStorage` and retried on the next load. `POST` is insert-only (`ON CONFLICT DO NOTHING`); a replayed id is rejected and cannot overwrite a row. Impossible scores, oversized bodies, and a per-address save limit are rejected.
 - Every row has `meta_json = {"source":"shuffle-3d","mode":"online"|"local"|"cpu","order":"scorer-first"}` (plus `room` for online matches). `rounds_json` uses SHUFL's round shape `{n, pts, hangers, totals, hammer}`. `hammer_mode` is `turns`. Shuffle's own order rule (the scorer throws first) is recorded in `meta.order`.
 
 The scoreboard marks each row as `SHUFL` or `3D · ONLINE / CPU / LOCAL`. The shufl repo needs no changes: everything is same-origin on `shuffle.cybush.uk`, so no CORS is involved.
@@ -154,7 +154,7 @@ npm run dev:worker   # builds dist/, then `wrangler dev` on http://localhost:878
 | `src/audio.ts` | Synthesized WebAudio effects, with nothing loaded from the network. The slide rumble runs straight to the output. Hits (inharmonic metal partials plus a click), launch thump, gutter drop and rattle, score bell chord, blank-round mallet, brass win fanfare, and UI clicks go through a compressor and a synthesized room reverb. |
 | `worker/index.ts` | Worker entry: `GET /__version`, `/api/rooms…` (create, info, join, WebSocket) and `/api/games`, `/api/leaderboard`. Page views are stamped with `X-Cybush-Version`; everything else is static assets. |
 | `worker/room.ts` | `Room` Durable Object: seats and tokens, authoritative match, idle expiry alarm, D1 write on match end |
-| `worker/api.ts`, `worker/games.ts`, `worker/schema.ts` | History API, SHUFL-compatible validation, schema bootstrap for empty local D1 |
+| `worker/api.ts`, `worker/games.ts`, `worker/schema.ts` | History API, score checks, ranked/unranked saves, schema bootstrap |
 
 The physics is a custom solver rather than a rigid-body engine. A shuffleboard weight only slides in 2D, and a small deterministic solver is easier to tune for a fair feel. The same solver plans the CPU's shots and runs online rooms.
 
@@ -169,7 +169,7 @@ Publishing is **GitHub → Cloudflare** only. `wrangler.jsonc` defines the Worke
 
 No secrets are committed.
 
-**First deploy after this change:** `wrangler deploy` registers the `Room` class from the `v1` migration and attaches the D1 binding. The Cloudflare account that deploys must be the one that owns the `shufl` D1 database. No schema change or D1 migration is needed. Later deploys reuse both.
+**First deploy after this change:** `wrangler deploy` registers the `Room` class from the `v1` migration and attaches the D1 binding. The Cloudflare account that deploys must be the one that owns the `shufl` D1 database. The `ranked` column is applied by the Worker on first use of the database (`worker/schema.ts`, same SQL as `migrations/0002_ranked.sql`). A manual `wrangler d1 migrations apply` is not required. Later deploys reuse both.
 
 ### Option A: GitHub Actions (`.github/workflows/deploy.yml`)
 
