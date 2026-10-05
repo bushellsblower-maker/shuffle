@@ -14,7 +14,7 @@ import { randomToken } from "../src/room-code.ts";
 import type { Team } from "../src/rules.ts";
 import { TEAM_NAMES } from "../src/teams.ts";
 import { insertGame } from "./api.ts";
-import { parseGameBody } from "./games.ts";
+import { reviewSave } from "./games.ts";
 import type { Env } from "./index.ts";
 
 interface Seat {
@@ -236,13 +236,13 @@ export class Room extends DurableObject<Env> {
       mode: "online",
       room: d.code,
     });
-    const parsed = parseGameBody(body);
-    if (!parsed.ok) {
-      console.error("shuffle room record", parsed.error);
+    const admitted = reviewSave("room", body);
+    if (!admitted.ok) {
+      console.error("shuffle room record", admitted.error);
       return;
     }
     try {
-      await insertGame(this.env.DB, parsed.game);
+      await insertGame(this.env.DB, admitted.game);
     } catch (error) {
       console.error("shuffle room record", error instanceof Error ? error.message : "failed");
     }

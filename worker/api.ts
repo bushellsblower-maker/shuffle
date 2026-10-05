@@ -1,18 +1,22 @@
 import type { GameSummary, Leader } from "../src/history.ts";
-import { checkClientGame, parseGameBody, parseLimit, parseMeta, roundCount, type StoredGame } from "./games.ts";
+import {
+  INSERT_GAME,
+  MAX_GAME_BYTES,
+  SAVE_WINDOW_MS,
+  duplicateError,
+  oversizeError,
+  parseLimit,
+  parseMeta,
+  reviewSave,
+  roundCount,
+  takeSaveSlot,
+  type StoredGame,
+} from "./games.ts";
 import { ensureGamesSchema } from "./schema.ts";
 
-const MAX_BODY = 48_000;
-
-// Insert-only: a replayed POST for an existing id is a no-op, so a browser
-// cannot overwrite rows SHUFL or a room wrote.
-const INSERT_GAME = `
-INSERT INTO games (
-  id, played_at, name1, name2, score1, score2, target,
-  winner_index, winner_name, rounds_json, hammer_mode, meta_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO NOTHING
-`;
+// Best-effort per isolate. Cloudflare sets CF-Connecting-IP, so each player
+// address gets its own window without a new binding or secret.
+const sessions = new Map<string, number[]>();
 
 const LIST_GAMES = `
 SELECT id, played_at, name1, name2, score1, score2, target,
@@ -50,11 +54,11 @@ export function json(body: unknown, status = 200): Response {
   });
 }
 
-export async function readJson(request: Request, max = MAX_BODY): Promise<unknown | undefined> {
+export async function readJson(request: Request, max = MAX_GAME_BYTES): Promise<unknown | undefined> {
   const declared = Number(request.headers.get("content-length") || "0");
-  if (Number.isFinite(declared) && declared > max) return undefined;
+  if (Number.isFinite(declared) && oversizeError(declared, max)) return undefined;
   const text = await request.text();
-  if (text.length > max) return undefined;
+  if (oversizeError(text.length, max)) return undefined;
   try {
     return JSON.parse(text) as unknown;
   } catch {
@@ -62,9 +66,9 @@ export async function readJson(request: Request, max = MAX_BODY): Promise<unknow
   }
 }
 
-export async function insertGame(db: D1Database, row: StoredGame): Promise<void> {
+export async function insertGame(db: D1Database, row: StoredGame): Promise<number> {
   await ensureGamesSchema(db);
-  await db
+  const result = await db
     .prepare(INSERT_GAME)
     .bind(
       row.id,
@@ -79,8 +83,28 @@ export async function insertGame(db: D1Database, row: StoredGame): Promise<void>
       row.roundsJson,
       row.hammerMode,
       row.metaJson,
+      row.ranked,
     )
     .run();
+  return Number(result.meta.changes) || 0;
+}
+
+function sessionKey(request: Request): string {
+  const ip = request.headers.get("cf-connecting-ip")?.trim() || "unknown";
+  return ip.slice(0, 64);
+}
+
+function consumeSave(request: Request, now = Date.now()): string | null {
+  const key = sessionKey(request);
+  const slot = takeSaveSlot(sessions.get(key) ?? [], now);
+  sessions.set(key, slot.hits);
+  if (sessions.size > 5000) {
+    for (const [id, hits] of sessions) {
+      const last = hits[hits.length - 1] ?? 0;
+      if (now - last >= SAVE_WINDOW_MS) sessions.delete(id);
+    }
+  }
+  return slot.ok ? null : slot.error;
 }
 
 function gameJson(row: GameRow): GameSummary {
@@ -115,13 +139,14 @@ async function listLeaders(db: D1Database, url: URL): Promise<Response> {
 }
 
 async function createGame(request: Request, db: D1Database): Promise<Response> {
+  const limited = consumeSave(request);
+  if (limited) return json({ error: limited }, 429);
   const body = await readJson(request);
   if (body === undefined) return json({ error: "Game body must be JSON under 48 KB" }, 400);
-  const denied = checkClientGame(body);
-  if (denied) return json({ error: denied }, 400);
-  const game = parseGameBody(body);
+  const game = reviewSave("client", body);
   if (!game.ok) return json({ error: game.error }, 400);
-  await insertGame(db, game.game);
+  const dup = duplicateError(await insertGame(db, game.game));
+  if (dup) return json({ error: dup }, 409);
   return json({ ok: true, id: game.game.id });
 }
 

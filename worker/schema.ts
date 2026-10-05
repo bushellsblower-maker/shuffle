@@ -1,6 +1,9 @@
-// Identical to shufl's migrations/0001_games.sql. The production database is
-// SHUFL's and already has these objects; this only fills an empty local D1
-// (`wrangler dev`). Every statement is idempotent.
+// Production already has SHUFL's `games` table. This fills an empty local D1
+// and, on an existing database, adds `ranked` and points `leaderboard` at
+// verified rows only. History selects and `DELETE FROM games WHERE id = ?`
+// do not name the new column, so they keep working.
+import { ADD_RANKED_COLUMN, LEADERBOARD_SELECT, LEADERBOARD_VIEW, UNRANK_CLIENT_GAMES } from "./games.ts";
+
 export const GAMES_SCHEMA = `CREATE TABLE IF NOT EXISTS games (
   id TEXT PRIMARY KEY,
   played_at TEXT NOT NULL,
@@ -13,35 +16,14 @@ export const GAMES_SCHEMA = `CREATE TABLE IF NOT EXISTS games (
   winner_name TEXT,
   rounds_json TEXT NOT NULL,
   hammer_mode TEXT,
-  meta_json TEXT
+  meta_json TEXT,
+  ranked INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_games_played_at ON games (played_at DESC);
 
 CREATE VIEW IF NOT EXISTS leaderboard AS
-SELECT
-  name_key,
-  MAX(display_name) AS name,
-  COUNT(DISTINCT id) AS games,
-  SUM(win) AS wins
-FROM (
-  SELECT
-    id,
-    lower(trim(name1)) AS name_key,
-    trim(name1) AS display_name,
-    CASE WHEN winner_index = 0 THEN 1 ELSE 0 END AS win
-  FROM games
-  WHERE trim(name1) <> ''
-  UNION ALL
-  SELECT
-    id,
-    lower(trim(name2)) AS name_key,
-    trim(name2) AS display_name,
-    CASE WHEN winner_index = 1 THEN 1 ELSE 0 END AS win
-  FROM games
-  WHERE trim(name2) <> ''
-) AS appearances
-GROUP BY name_key;
+${LEADERBOARD_SELECT};
 `;
 
 const ready = new WeakMap<object, Promise<void>>();
@@ -57,13 +39,47 @@ export function ensureGamesSchema(db: D1Database): Promise<void> {
   return pending;
 }
 
-async function applyGamesSchema(db: D1Database): Promise<void> {
-  const found = await db
-    .prepare("SELECT count(*) AS n FROM sqlite_master WHERE (type = 'table' AND name = 'games') OR (type = 'view' AND name = 'leaderboard')")
-    .first<{ n: number }>();
-  if (Number(found?.n) === 2) return;
-  const statements = GAMES_SCHEMA.split(/;\s*\n\s*\n/)
+function statementsOf(sql: string): string[] {
+  return sql
+    .split(/;\s*\n\s*\n/)
     .map((s) => s.trim().replace(/;$/, ""))
     .filter(Boolean);
-  await db.batch(statements.map((s) => db.prepare(s)));
+}
+
+async function applyGamesSchema(db: D1Database): Promise<void> {
+  const table = await db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'games'")
+    .first<{ name: string }>();
+  // Sequential: a later statement can see a column or view created just above it.
+  if (!table?.name) {
+    for (const sql of statementsOf(GAMES_SCHEMA)) await db.prepare(sql).run();
+  }
+  await ensureRanked(db);
+}
+
+async function ensureRanked(db: D1Database): Promise<void> {
+  const info = await db.prepare("PRAGMA table_info(games)").all<{ name: string }>();
+  const hasRanked = (info.results ?? []).some((col) => col.name === "ranked");
+  const view = await db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'leaderboard'")
+    .first<{ sql: string }>();
+  const viewOk = typeof view?.sql === "string" && /\branked\s*=\s*1\b/.test(view.sql);
+  if (hasRanked && viewOk) return;
+
+  const statements: string[] = [];
+  if (!hasRanked) statements.push(ADD_RANKED_COLUMN);
+  statements.push(UNRANK_CLIENT_GAMES);
+  if (!viewOk) {
+    statements.push("DROP VIEW IF EXISTS leaderboard");
+    statements.push(LEADERBOARD_VIEW);
+  }
+  for (const sql of statements) {
+    try {
+      await db.prepare(sql).run();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "";
+      if (sql === ADD_RANKED_COLUMN && /duplicate column/i.test(msg)) continue;
+      throw error;
+    }
+  }
 }

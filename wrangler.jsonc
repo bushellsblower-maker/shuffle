@@ -46,7 +46,8 @@
     {
       "binding": "DB",
       "database_name": "shufl",
-      "database_id": "41df98c1-d6bd-479a-b2c9-8f1b8c83966b"
+      "database_id": "41df98c1-d6bd-479a-b2c9-8f1b8c83966b",
+      "migrations_dir": "migrations"
     }
   ],
   "analytics_engine_datasets": [

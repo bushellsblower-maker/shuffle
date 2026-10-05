@@ -21,7 +21,9 @@ async function post(game: GameBody): Promise<boolean> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(game),
     });
-    // A 4xx will never succeed on retry, so drop it rather than queue forever.
+    // A rejected body will never succeed on retry. A 429 is the session
+    // limit, so keep the game and try again later.
+    if (res.status === 429) return false;
     return res.ok || (res.status >= 400 && res.status < 500);
   } catch {
     return false;
