@@ -1,7 +1,9 @@
 import { cleanPlayerName, type RoomTicket } from "../src/protocol.ts";
 import { isRoomCode, normalizeCode, randomCode } from "../src/room-code.ts";
 import { handleGamesApi, json, readJson } from "./api.ts";
+import { recordAuditHit } from "./audit-hit.ts";
 import type { Room } from "./room.ts";
+import { VERSION_BUILT, VERSION_SHA } from "./version.generated.ts";
 
 export { Room } from "./room.ts";
 
@@ -9,6 +11,8 @@ export interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   ROOMS: DurableObjectNamespace<Room>;
+  AUDIT_HITS?: AnalyticsEngineDataset;
+  CF_VERSION?: WorkerVersionMetadata;
 }
 
 const ROOM_PATH = /^\/api\/rooms\/([A-Za-z0-9]+)(\/join|\/ws)?$/;
@@ -47,21 +51,45 @@ async function handleRoom(request: Request, env: Env, url: URL): Promise<Respons
   return info ? json(info) : json({ error: "Room not found. Check the code." }, 404);
 }
 
+function withVersion(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("X-Cybush-Version", VERSION_SHA);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+    webSocket: response.webSocket,
+  });
+}
+
 export default {
-  async fetch(request, env): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname === "/api/games" || url.pathname === "/api/leaderboard") {
-      return handleGamesApi(request, env.DB, url);
-    }
-    if (url.pathname === "/api/rooms" || url.pathname.startsWith("/api/rooms/")) {
-      try {
-        return await handleRoom(request, env, url);
-      } catch (error) {
-        console.error("shuffle rooms", error instanceof Error ? error.message : "failed");
-        return json({ error: "Rooms are unavailable right now" }, 500);
-      }
-    }
-    if (url.pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);
-    return env.ASSETS.fetch(request);
+  async fetch(request, env, ctx): Promise<Response> {
+    recordAuditHit(request, env, ctx);
+    return withVersion(await handleFetch(request, env));
   },
 } satisfies ExportedHandler<Env>;
+
+async function handleFetch(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  if (request.method === "GET" && url.pathname === "/__version") {
+    return json({
+      app: "shuffle",
+      sha: VERSION_SHA,
+      built: VERSION_BUILT,
+      cf_version_id: env.CF_VERSION?.id ?? null,
+    });
+  }
+  if (url.pathname === "/api/games" || url.pathname === "/api/leaderboard") {
+    return handleGamesApi(request, env.DB, url);
+  }
+  if (url.pathname === "/api/rooms" || url.pathname.startsWith("/api/rooms/")) {
+    try {
+      return await handleRoom(request, env, url);
+    } catch (error) {
+      console.error("shuffle rooms", error instanceof Error ? error.message : "failed");
+      return json({ error: "Rooms are unavailable right now" }, 500);
+    }
+  }
+  if (url.pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);
+  return env.ASSETS.fetch(request);
+}
