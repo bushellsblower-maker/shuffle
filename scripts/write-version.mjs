@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 function resolveSha() {
   const fromEnv = process.env.WORKERS_CI_COMMIT_SHA || process.env.GITHUB_SHA || "";
   const trimmed = fromEnv.trim();
-  if (trimmed) return trimmed.slice(0, 7);
+  // Builds without a commit hash set WORKERS_CI_COMMIT_SHA to the branch name.
+  // Only accept a hex SHA; otherwise fall back to git.
+  if (/^[0-9a-f]{7,40}$/i.test(trimmed)) return trimmed.slice(0, 7).toLowerCase();
   try {
     const sha = execSync("git rev-parse --short=7 HEAD", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
     if (sha) return sha.slice(0, 7);
